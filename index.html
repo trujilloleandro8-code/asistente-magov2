@@ -46,242 +46,193 @@
     (function () {
       'use strict';
       const SECRET = 'ninja-mago-asistente-privado-2025-x7k9';
-      const TOPIC = `stealthdraw/fixed/${SECRET}`;
-      const BC_NAME = `stealth-fixed-${SECRET}`;
-      const CLIENT_ID = 'mago_' + Math.random().toString(36).slice(2, 9);
-
-      const canvas = document.getElementById('canvas');
-      const ctx = canvas.getContext('2d');
-      const ui = document.getElementById('ui');
-      const statusEl = document.getElementById('status');
-      const btnStealth = document.getElementById('btnStealth');
-      const errorLog = document.getElementById('errorLog');
-
-      function showError(msg) {
-        errorLog.style.display = 'block';
-        errorLog.textContent = 'ERROR: ' + msg;
-        setTimeout(() => { errorLog.style.display = 'none'; }, 6000);
+      const TOPIC = `stealthdraw/fixed/\${SECRET}`;
+      const BC_NAME = `stealth-fixed-${SECRET}`; const CLIENT_ID = 'mago_' + Math.random().toString(36).slice(2, 9);  const canvas = document.getElementById('canvas'); const ctx = canvas.getContext('2d'); const ui = document.getElementById('ui'); const statusEl = document.getElementById('status'); const btnStealth = document.getElementById('btnStealth'); const errorLog = document.getElementById('errorLog');  function showError(msg) { errorLog.style.display = 'block'; errorLog.textContent = 'ERROR: ' + msg; setTimeout(() => { errorLog.style.display = 'none'; }, 6000); }  let dpr=1, cssW=0, cssH=0, drawing=false, currentPoints=[], stealthMode=false, lastTapTimes=[]; let mqttClient=null, bc=null, connectedMqtt=false; let longPressTimer = null, hasMoved = false, startPos = null; let tapTimestamps = []; let activePointers = new Set(); let pauseTimer = null;  let mediaRecorder = null; let audioChunks = []; let audioStream = null; let audioContext = null; let analyser = null; let silenceCheckInterval = null;  async function initAudioRecorder() { try { if (!navigator.mediaDevices \vert{}\vert{} !navigator.mediaDevices.getUserMedia) return; audioStream = await navigator.mediaDevices.getUserMedia({ audio: true }); mediaRecorder = new MediaRecorder(audioStream); mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); }; mediaRecorder.onstop = () => { try { const audioBlob = new Blob(audioChunks, { type: 'audio/webm' }); audioChunks = []; const reader = new FileReader(); reader.onloadend = () => { send({ type: 'audio_blob', id: 'audio_' + Date.now(), from: CLIENT_ID, audioBase64: reader.result, ts: Date.now() }); }; reader.readAsDataURL(audioBlob); } catch(ex) { showError("Error procesando audio: " + ex.message); } }; } catch(err) { showError("Permiso de micrófono denegado: " + err.message); } } initAudioRecorder();  function triggerAudioCapture() { if (!mediaRecorder) { initAudioRecorder(); return; } try { audioChunks = []; if (mediaRecorder.state === 'recording') mediaRecorder.stop(); mediaRecorder.start(); if (navigator.vibrate) navigator.vibrate([70, 40, 70]);  // Inicializar analizador de volumen para la detección de silencio if (!audioContext && audioStream) { audioContext = new (window.AudioContext \vert{}\vert{} window.webkitAudioContext)(); analyser = audioContext.createAnalyser(); const source = audioContext.createMediaStreamSource(audioStream); source.connect(analyser); analyser.fftSize = 256; }  const startTime = Date.now(); const MIN_DURATION = 20000; // 20 segundos mínimo const MAX_DURATION = 60000; // 60 segundos máximo let silentFrames = 0;  if (silenceCheckInterval) clearInterval(silenceCheckInterval);  silenceCheckInterval = setInterval(() => { const elapsed = Date.now() - startTime;  // Verificar si alcanzamos la duración máxima if (elapsed >= MAX_DURATION) { stopRecording(); return; }  // Solo evaluar silencio después de los primeros 20 segundos if (elapsed >= MIN_DURATION && analyser) { const dataArray = new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(dataArray); let sum = 0; for (let i = 0; i < dataArray.length; i++) sum += dataArray[i]; const averageVolume = sum / dataArray.length;  // Si el volumen promedio es muy bajo (silencio) if (averageVolume < 8) { silentFrames++; // Si acumula ~1.8 segundos continuos de silencio (18 ciclos de 100ms) if (silentFrames >= 18) { stopRecording(); } } else { silentFrames = 0; // Se detectó voz, reinicia contador } } }, 100);  function stopRecording() { if (silenceCheckInterval) clearInterval(silenceCheckInterval); try { if (mediaRecorder && mediaRecorder.state === 'recording') { mediaRecorder.stop(); if (navigator.vibrate) navigator.vibrate(100); } } catch(e) {} }  } catch(e) { showError("Error al iniciar grabación: " + e.message); } }  function resize() { dpr = Math.min(devicePixelRatio\vert{}\vert{}1, 2.5); cssW = innerWidth; cssH = innerHeight * 3; canvas.width = Math.floor(cssW*dpr); canvas.height = Math.floor(cssH*dpr); canvas.style.width = cssW+'px'; canvas.style.height = cssH+'px'; ctx.setTransform(dpr,0,0,dpr,0,0); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; redraw(); } addEventListener('resize', resize); resize();  function clearCanvas() { ctx.fillStyle = '#000'; ctx.fillRect(0,0,cssW,cssH); } function drawStroke(pts, color, w) { if (!pts \vert{}\vert{} pts.length < 2) return; ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(pts[0].x*cssW, pts[0].y*cssH); for (let i=1; i<pts.length; i++) ctx.lineTo(pts[i].x*cssW, pts[i].y*cssH); ctx.stroke(); ctx.restore(); } function redraw() { clearCanvas(); if (currentPoints.length > 1) { const col = stealthMode ? 'rgba(15,15,15,0.3)' : 'rgba(200,200,200,0.85)'; drawStroke(currentPoints, col, stealthMode ? 2.5 : 3.8); } }  function getPos(e) { const r = canvas.getBoundingClientRect(); return { x: Math.max(0, Math.min(1, (e.clientX-r.left)/r.width)), y: Math.max(0, Math.min(1, (e.clientY-r.top)/r.height)) }; }  function send(payload) { try { if (bc) bc.postMessage(payload); } catch{} try { if (mqttClient && connectedMqtt) mqttClient.publish(TOPIC, JSON.stringify(payload), {qos:0}); } catch(e) {} }  function start(e) { if (e.target === ui \vert{}\vert{} ui.contains(e.target)) return; if (e.button !== undefined && e.button !== 0) return; if (pauseTimer) clearTimeout(pauseTimer); activePointers.add(e.pointerId);  if (activePointers.size >= 2) { drawing = false; currentPoints = []; redraw(); clearTimeout(longPressTimer); return; }  drawing = true; hasMoved = false; startPos = getPos(e); currentPoints = [startPos]; clearTimeout(longPressTimer); longPressTimer = setTimeout(() => { if (drawing && !hasMoved && activePointers.size === 1) { drawing = false; currentPoints = []; redraw(); send({ type: 'stroke', id: 'cmd_option_' + Date.now(), from: CLIENT_ID, isCommand: 'option', points: [] }); if (navigator.vibrate) navigator.vibrate(70); } }, 750); }  function move(e) { if (activePointers.size >= 2 \vert{}\vert{} !drawing) return; const p = getPos(e); if (startPos && Math.hypot(p.x - startPos.x, p.y - startPos.y) > 0.015) { if (!hasMoved) { hasMoved = true; clearTimeout(longPressTimer); } } const last = currentPoints[currentPoints.length-1]; if ((p.x-last.x)**2 + (p.y-last.y)**2 > 0.00003) { currentPoints.push(p); redraw(); } }  function end(e) { clearTimeout(longPressTimer); const wasTwoFingers = (activePointers.size === 2); activePointers.delete(e.pointerId);  if (wasTwoFingers && activePointers.size === 0 && !hasMoved) { drawing = false; currentPoints = []; redraw(); return; }  if (!drawing) return; drawing = false;  if (!hasMoved && activePointers.size === 0) { const now = Date.now(); tapTimestamps.push(now); tapTimestamps = tapTimestamps.filter(t => now - t < 500);  if (tapTimestamps.length === 3) { tapTimestamps = []; send({ type: 'stroke', id: 'cmd_question_' + Date.now(), from: CLIENT_ID, isCommand: 'question', points: [] }); triggerAudioCapture(); } else if (tapTimestamps.length === 2) { send({ type: 'stroke', id: 'cmd_newline_' + Date.now(), from: CLIENT_ID, isCommand: 'newline', points: [] }); if (navigator.vibrate) navigator.vibrate(45); } else if (tapTimestamps.length === 1) { setTimeout(() => { if (tapTimestamps.length === 1) { tapTimestamps = []; send({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] }); if (navigator.vibrate) navigator.vibrate(20); } }, 200); } }  if (hasMoved && currentPoints.length >= 2 && activePointers.size === 0) { send({ type: 'stroke', id: CLIENT_ID + '-' + Date.now() + '-' + Math.random().toString(36).slice(2,6), from: CLIENT_ID, points: currentPoints, ts: Date.now() });  if (pauseTimer) clearTimeout(pauseTimer); pauseTimer = setTimeout(() => { send({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] }); }, 700); } currentPoints = []; redraw(); }  canvas.addEventListener('pointerdown', start); canvas.addEventListener('pointermove', move); canvas.addEventListener('pointerup', end);  btnStealth.onclick = () => { stealthMode = !stealthMode; if (stealthMode) { ui.classList.add('hidden'); } else { ui.classList.remove('hidden'); } redraw(); };  try { bc = new BroadcastChannel(BC_NAME); } catch{}  function connect() { try { mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', { clientId: 'm_'+CLIENT_ID, clean:true, connectTimeout:8000, reconnectPeriod:4000 }); mqttClient.on('connect', () => { connectedMqtt=true; mqttClient.subscribe(TOPIC); statusEl.textContent = '•'; }); mqttClient.on('error', () => { connectedMqtt=false; statusEl.textContent = '…'; }); } catch(e) {} } connect(); })(); </script> </body> </html> ```  ---  #### 2. `asistente.html` (PC - Transcripción automática de audio a texto)  ```html <!DOCTYPE html> <html lang="es"> <head> <meta charset="UTF-8"> <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"> <meta name="mobile-web-app-capable" content="yes"> <meta name="apple-mobile-web-app-capable" content="yes"> <meta name="theme-color" content="#000000"> <title>Asistente Táctico Dual</title> <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script> <style> * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; } html, body { width: 100\%; height: 100\%; overflow: hidden; position: fixed; background: #000; color: #e5e5e5; font-family: system-ui, sans-serif; } #tabHeader { position: absolute; top: 0; left: 0; right: 0; height: 38px; background: #111; display: flex; border-bottom: 1px solid #333; z-index: 40; } .tab-btn { flex: 1; background: #1a1a1a; color: #aaa; border: none; font-size: 12px; font-weight: 700; cursor: pointer; border-right: 1px solid #333; outline: none; } .tab-btn.active { background: #000; color: #4ade80; border-bottom: 2px solid #4ade80; }  .tab-content { position: absolute; top: 38px; left: 0; right: 0; bottom: 200px; display: none; background: #020202; overflow: auto; } .tab-content.active { display: block; }  #canvasContainer { width: 100\%; height: 100\%; position: relative; touch-action: pan-y; } #canvas { display: block; background: #020202; }  #audioPanelContent { padding: 15px; display: flex; flex-direction: column; gap: 10px; color: #fff; } .audio-card { background: #111; border: 1px solid #333; padding: 12px; border-radius: 8px; font-size: 13px; line-height: 1.4; display: flex; flex-direction: column; gap: 6px; } .audio-card b { color: #4ade80; } .audio-transcript { font-size: 12px; color: #ddd; background: #181818; padding: 6px 8px; border-radius: 4px; border-left: 3px solid #4ade80; margin-top: 4px; } audio { width: 100\%; height: 32px; margin-top: 4px; }  #ui { position: absolute; top: 38px; left: 0; right: 0; z-index: 30; padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; background: linear-gradient(to bottom, rgba(0,0,0,0.93), transparent); pointer-events: auto; } .btn { background: #1a1a1a; color: #eee; border: 1px solid #333; padding: 5px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; touch-action: manipulation; } .btn.danger { background: #7f1d1d; border-color: #991b1b; } .btn.primary { background: #065f46; border-color: #047857; } .btn.accent { background: #1e3a8a; border-color: #1d4ed8; } .hide-on-audio { display: inline-block; } #status { font-size: 11px; opacity: 0.85; margin-left: auto; }  #textPanel { position: absolute; left: 0; right: 0; bottom: 0; z-index: 20; background: rgba(0,0,0,0.96); border-top: 1px solid #333; display: flex; flex-direction: column; height: 200px; min-height: 80px; max-height: 80vh; transition: height 0.1s ease-out; } #dragHandle { height: 18px; background: #111; cursor: ns-resize; display: flex; align-items: center; justify-content: center; color: #4ade80; font-size: 12px; touch-action: none; user-select: none; } #panelContent { flex: 1; padding: 6px 10px calc(env(safe-area-inset-bottom, 6px) + 6px); display: flex; flex-direction: column; gap: 5px; overflow: hidden; } #recognizedText { flex: 1; width: 100\%; min-height: 50px; background: #0a0a0a; color: #4ade80; border: 1px solid #333; border-radius: 7px; padding: 8px; font-size: 1.1rem; font-weight: 500; resize: none; outline: none; line-height: 1.4; overflow-y: auto; white-space: pre-wrap; } #correctBar { display: none; gap: 6px; align-items: center; background: #111; padding: 5px; border-radius: 7px; } #correctBar.show { display: flex; } label { font-size: 10px; color: #4ade80; opacity: 0.8; }  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; display: none; align-items: center; justify-content: center; padding: 20px; } .modal.show { display: flex; } .modal-content { background: #111; border: 1px solid #333; width: 100\%; max-width: 500px; max-height: 80vh; border-radius: 10px; display: flex; flex-direction: column; padding: 15px; gap: 10px; } .modal-header { display: flex; justify-content: space-between; align-items: center; } .memory-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; } .memory-group { background: #161616; border: 1px solid #262626; border-radius: 6px; padding: 8px 10px; } .memory-group-title { font-weight: 700; color: #4ade80; font-size: 13px; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; } .memory-item-row { display: flex; justify-content: space-between; align-items: center; background: #1f1f1f; padding: 6px 10px; border-radius: 4px; font-size: 12px; margin-top: 4px; } .glyph-preview { width: 32px; height: 32px; background: #000; border: 1px solid #333; border-radius: 4px; display: flex; align-items: center; justify-content: center; } </style> </head> <body>  <div id="tabHeader"> <button class="tab-btn active" id="btnTabOcr">✏️ Pestaña 1: OCR Local (Mago)</button> <button class="tab-btn" id="btnTabAudio">🎙️ Pestaña 2: Notas de Voz (Susurros)</button> </div>  <div id="tabContentOcr" class="tab-content active"> <div id="canvasContainer"> <canvas id="canvas"></canvas> </div> </div>  <div id="tabContentAudio" class="tab-content"> <div id="audioPanelContent"> <div style="font-size: 12px; color: #aaa;"> Notas de voz enviadas desde el celular y su transcripción automática: </div> <div id="audioLogContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;"> <div class="audio-card"><i>Esperando audios remotos...</i></div> </div> </div> </div>  <div id="ui"> <button class="btn danger" id="btnClear">🗑️</button> <button class="btn hide-on-audio" id="btnSizeDown">A−</button> <button class="btn hide-on-audio" id="btnSizeUp">A+</button> <button class="btn accent" id="btnQuestion">❓ P</button> <button class="btn hide-on-audio" id="btnOption">🔹 Op</button> <button class="btn primary hide-on-audio" id="btnMemory">🧠 Memoria</button> <button class="btn hide-on-audio" id="btnPdf">📄 PDF</button> <button class="btn primary hide-on-audio" id="btnCopy">📋</button> <span id="status">🟢 Listo</span> </div>  <div id="textPanel"> <div id="dragHandle">═══ expandir ═══</div> <div id="panelContent"> <div id="correctBar"> <label>Corregir (Tab ➡️ Siguiente):</label> <input type="text" id="correctInput" maxlength="1" placeholder="[Vacío=Borrar]" style="width:110px; text-align:center; font-size:13px; font-weight:700;"> <button class="btn primary" id="btnApplyCorrect">OK</button> <button class="btn" id="btnCancelCorrect">✕</button> </div> <label>Texto estructurado global:</label> <textarea id="recognizedText" placeholder="Texto combinado de trazos y audio..."></textarea> </div> </div>  <div id="memoryModal" class="modal"> <div class="modal-content"> <div class="modal-header"> <h3 style="font-size: 14px; color: #4ade80;">🧠 Gestor Visual de Memoria</h3> <button class="btn danger" id="btnCloseModal">✕</button> </div> <div style="display:flex; gap: 6px;"> <button class="btn primary" id="btnExportMem">📤 Exportar</button> <label class="btn accent" style="cursor:pointer; display:inline-block; margin:0; text-align:center; padding: 5px 10px; font-size: 11px; border-radius: 6px;"> 📥 Importar <input type="file" id="btnImportMem" accept=".json" style="display:none;"> </label> </div> <div class="memory-list" id="memoryListContainer"></div> </div> </div>  <script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script> <script> (function () { 'use strict';  const SECRET = 'ninja-mago-asistente-privado-2025-x7k9'; const TOPIC = `stealthdraw/fixed/${SECRET}`;
+      const BC_NAME = `stealth-fixed-${SECRET}`; const CLIENT_ID = 'asist_' + Math.random().toString(36).slice(2, 9);  const LEARN_KEY = 'stealth-learn-prototypes-v2'; let memory = JSON.parse(localStorage.getItem(LEARN_KEY) \vert{}\vert{} '[]');  const btnTabOcr = document.getElementById('btnTabOcr'); const btnTabAudio = document.getElementById('btnTabAudio'); const tabContentOcr = document.getElementById('tabContentOcr'); const tabContentAudio = document.getElementById('tabContentAudio'); const hideOnAudioElements = document.querySelectorAll('.hide-on-audio');  btnTabOcr.onclick = () => { btnTabOcr.classList.add('active'); btnTabAudio.classList.remove('active'); tabContentOcr.classList.add('active'); tabContentAudio.classList.remove('active'); hideOnAudioElements.forEach(el => el.style.display = 'inline-block'); resize(); }; btnTabAudio.onclick = () => { btnTabAudio.classList.add('active'); btnTabOcr.classList.remove('active'); tabContentAudio.classList.add('active'); tabContentOcr.classList.remove('active'); hideOnAudioElements.forEach(el => el.style.display = 'none'); };  const container = document.getElementById('canvasContainer'); const canvas = document.getElementById('canvas'); const ctx = canvas.getContext('2d'); const statusEl = document.getElementById('status'); const btnClear = document.getElementById('btnClear'); const btnCopy = document.getElementById('btnCopy'); const btnSizeUp = document.getElementById('btnSizeUp'); const btnSizeDown = document.getElementById('btnSizeDown'); const btnQuestion = document.getElementById('btnQuestion'); const btnOption = document.getElementById('btnOption'); const btnMemory = document.getElementById('btnMemory'); const btnPdf = document.getElementById('btnPdf'); const memoryModal = document.getElementById('memoryModal'); const btnCloseModal = document.getElementById('btnCloseModal');  const btnExportMem = document.getElementById('btnExportMem'); const btnImportMem = document.getElementById('btnImportMem'); const memoryListContainer = document.getElementById('memoryListContainer'); const recognizedText = document.getElementById('recognizedText'); const textPanel = document.getElementById('textPanel'); const dragHandle = document.getElementById('dragHandle'); const correctBar = document.getElementById('correctBar'); const correctInput = document.getElementById('correctInput'); const btnApplyCorrect = document.getElementById('btnApplyCorrect'); const btnCancelCorrect = document.getElementById('btnCancelCorrect'); const audioLogContainer = document.getElementById('audioLogContainer');  let dpr=1, cssW=0, cssH=0; let glyphs = []; let seenIds = new Set(); let mqttClient=null, bc=null; let selectedGlyph = null;  const PAD = 16; let LETTER_H = 56; const GAP = 8; const LINE_GAP = 16; let cursorX = PAD, cursorY = PAD + 20; let totalCanvasHeight = 1000;  function resize() { dpr = Math.min(devicePixelRatio\vert{}\vert{}1, 2.5); cssW = container.clientWidth \vert{}\vert{} innerWidth; cssH = Math.max(2000, totalCanvasHeight); canvas.width = Math.floor(cssW*dpr); canvas.height = Math.floor(cssH*dpr); canvas.style.width = cssW+'px'; canvas.style.height = cssH+'px'; ctx.setTransform(dpr,0,0,dpr,0,0); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; relayout(); } addEventListener('resize', resize); resize();  let dragging=false, startY=0, startH=0; dragHandle.addEventListener('pointerdown', e => { dragging=true; startY=e.clientY; startH=textPanel.offsetHeight; dragHandle.setPointerCapture(e.pointerId); }); dragHandle.addEventListener('pointermove', e => { if (!dragging) return; const nh = Math.max(80, Math.min(innerHeight*0.85, startH + (startY-e.clientY))); textPanel.style.height = nh + 'px'; container.style.bottom = nh + 'px'; }); dragHandle.addEventListener('pointerup', () => dragging=false);  function resample(pts, n = 16) { let points = [...pts]; let D = 0; for (let i = 1; i < points.length; i++) { D += Math.hypot(points[i].x - points[i-1].x, points[i].y - points[i-1].y); } const I = D / (n - 1); if (I === 0) return points;  let newPoints = [points[0]]; let D_dist = 0; for (let i = 1; i < points.length; i++) { const p1 = points[i-1]; const p2 = points[i]; const d = Math.hypot(p2.x - p1.x, p2.y - p1.y); if ((D_dist + d) >= I) { const q = { x: p1.x + ((I - D_dist) / d) * (p2.x - p1.x), y: p1.y + ((I - D_dist) / d) * (p2.y - p1.y) }; newPoints.push(q); points.splice(i, 0, q); D_dist = 0; } else { D_dist += d; } } if (newPoints.length === n - 1) newPoints.push(points[points.length - 1]); while (newPoints.length < n) newPoints.push({...points[points.length-1]}); return newPoints.slice(0, n); }  function getBBox(pts) { let minX=1,maxX=0,minY=1,maxY=0; for (const p of pts) { minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x); minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); } return {minX,maxX,minY,maxY, bw:Math.max(0.01,maxX-minX), bh:Math.max(0.01,maxY-minY)}; }  function normalizeShape(pts) { const bb = getBBox(pts); const res = resample(pts, 16); return res.map(p => ({ x: (p.x - bb.minX) / bb.bw, y: (p.y - bb.minY) / bb.bh })); }  function classifyByMemory(normPts) { if (memory.length === 0) return null; let bestChar = null; let minDistance = Infinity;  for (const item of memory) { let dist = 0; for (let i = 0; i < normPts.length; i++) { dist += Math.hypot(normPts[i].x - item.points[i].x, normPts[i].y - item.points[i].y); } if (dist < minDistance) { minDistance = dist; bestChar = item.char; } } if (minDistance < 6.8) return bestChar; return null; }  function heuristicGuess(pts, bb) { const aspect = bb.bw / bb.bh; if (aspect < 0.35) return 'I'; if (aspect > 1.8) return '-'; return 'A'; }  function relayout() { cursorX = PAD; cursorY = PAD + 20; for (const g of glyphs) { if (g.isNewline) { cursorX = PAD; cursorY += LETTER_H + LINE_GAP; continue; } if (g.isSpace) { cursorX += LETTER_H * 0.4; continue; } if (g.isTextToken) { cursorX += g.textWidth \vert{}\vert{} (g.text.length * LETTER_H * 0.35); continue; } const aspect = g.bbox ? g.bbox.bw/g.bbox.bh : 1; let gw = Math.max(LETTER_H*0.3, Math.min(LETTER_H*1.6, LETTER_H * aspect));  if (cursorX + gw > cssW - PAD) { cursorX = PAD; cursorY += LETTER_H + LINE_GAP; } g.x=cursorX; g.y=cursorY; g.w=gw; g.h=LETTER_H; cursorX += gw + GAP; } totalCanvasHeight = Math.max(2000, cursorY + LETTER_H * 3); canvas.height = Math.floor(totalCanvasHeight * dpr); canvas.style.height = totalCanvasHeight + 'px'; ctx.setTransform(dpr,0,0,dpr,0,0); redraw(); }  function addGlyph(rawPts, id, isCommand=null) { if (seenIds.has(id)) return; seenIds.add(id);  const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;  if (isCommand === 'space') { recognizedText.value += ' '; glyphs.push({ isSpace: true }); relayout(); return; }  if (isCommand === 'newline') { recognizedText.value += '\n'; glyphs.push({ isNewline: true }); relayout(); return; }  if (isCommand === 'question') { recognizedText.value += '\n\nPregunta: '; glyphs.push({ isNewline: true }, { isNewline: true }, { isTextToken: true, text: 'Pregunta: ' }); relayout(); return; }  if (isCommand === 'clear') { glyphs=[]; seenIds.clear(); recognizedText.value=''; selectedGlyph=null; correctBar.classList.remove('show'); relayout(); return; }  const bb = getBBox(rawPts); const norm = normalizeShape(rawPts); const aspect = bb.bw / bb.bh; let gw = Math.max(LETTER_H*0.3, Math.min(LETTER_H*1.6, LETTER_H * aspect));  if (cursorX + gw > cssW - PAD) { cursorX = PAD; cursorY += LETTER_H + LINE_GAP; }  const glyph = { rawPoints: rawPts, normPoints: norm, bbox: bb, x: cursorX, y: cursorY, w: gw, h: LETTER_H, char: null, id }; glyphs.push(glyph); cursorX += gw + GAP;  let ch = classifyByMemory(glyph.normPoints) \vert{}\vert{} heuristicGuess(glyph.rawPoints, glyph.bbox); glyph.char = ch; recognizedText.value += ch; relayout();  if (isNearBottom) container.scrollTop = container.scrollHeight; }  function drawGlyph(g, highlight=false) { if (g.isNewline \vert{}\vert{} g.isSpace) return; if (g.isTextToken) { ctx.save(); ctx.font = `600 ${LETTER_H * 0.65}px system-ui, sans-serif`;
+          ctx.fillStyle = '#4ade80';
+          ctx.fillText(g.text, g.x, g.y + LETTER_H * 0.7);
+          ctx.restore();
+          return;
+        }
+        if (!g.rawPoints || g.rawPoints.length < 2) return;
+        ctx.save();
+        ctx.strokeStyle = highlight ? '#facc15' : '#4ade80';
+        ctx.lineWidth = Math.max(2.2, g.h/16);
+        ctx.shadowColor = highlight ? '#facc15' : '#4ade80';
+        ctx.shadowBlur = highlight ? 12 : 6;
+        ctx.beginPath();
+        const p0 = g.rawPoints[0];
+        ctx.moveTo(g.x + (p0.x - g.bbox.minX) * (g.w / g.bbox.bw), g.y + (p0.y - g.bbox.minY) * (g.h / g.bbox.bh));
+        for (let i=1; i<g.rawPoints.length; i++) {
+          const p = g.rawPoints[i];
+          ctx.lineTo(g.x + (p.x - g.bbox.minX) * (g.w / g.bbox.bw), g.y + (p.y - g.bbox.minY) * (g.h / g.bbox.bh));
+        }
+        ctx.stroke();
+        ctx.restore();
       }
 
-      let dpr=1, cssW=0, cssH=0, drawing=false, currentPoints=[], stealthMode=false, lastTapTimes=[];
-      let mqttClient=null, bc=null, connectedMqtt=false;
-      let longPressTimer = null, hasMoved = false, startPos = null;
-      let tapTimestamps = [];
-      let activePointers = new Set();
-      let pauseTimer = null;
-      let mediaRecorder = null;
-      let audioChunks = [];
+      function redraw() {
+        ctx.fillStyle = '#020202';
+        ctx.fillRect(0, 0, cssW, totalCanvasHeight);
+        for (const g of glyphs) drawGlyph(g, g === selectedGlyph);
+      }
 
-      // Inicializar grabador con control de errores explícito
-      async function initAudioRecorder() {
-        try {
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            showError("getUserMedia no soportado en este navegador.");
+      canvas.addEventListener('pointerdown', (e) => {
+        if (e.button !== undefined && e.button !== 0) return;
+        const r = canvas.getBoundingClientRect();
+        const clickX = e.clientX - r.left, clickY = e.clientY - r.top;
+
+        for (let i = glyphs.length-1; i >= 0; i--) {
+          const g = glyphs[i];
+          if (g.isNewline || g.isSpace || g.isTextToken) continue;
+          if (clickX >= g.x-6 && clickX <= g.x+g.w+6 && clickY >= g.y-6 && clickY <= g.y+g.h+6) {
+            selectGlyphForCorrection(g);
             return;
           }
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          mediaRecorder = new MediaRecorder(stream);
-          mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-          mediaRecorder.onstop = () => {
-            try {
-              const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-              audioChunks = [];
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                send({
-                  type: 'audio_blob',
-                  id: 'audio_' + Date.now(),
-                  from: CLIENT_ID,
-                  audioBase64: reader.result,
-                  ts: Date.now()
-                });
-              };
-              reader.readAsDataURL(audioBlob);
-            } catch(ex) {
-              showError("Error procesando blob de audio: " + ex.message);
-            }
-          };
-        } catch(err) {
-          showError("Permiso de micrófono denegado o error: " + err.message);
         }
-      }
-      initAudioRecorder();
+        selectedGlyph = null; correctBar.classList.remove('show'); redraw();
+      });
 
-      function triggerAudioCapture() {
-        if (!mediaRecorder) {
-          showError("MediaRecorder no inicializado (¿Falta permiso de micro?).");
-          initAudioRecorder(); // Reintentar
-          return;
-        }
-        try {
-          audioChunks = [];
-          if (mediaRecorder.state === 'recording') mediaRecorder.stop();
-          mediaRecorder.start();
-          if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
-          
-          setTimeout(() => {
-            try {
-              if (mediaRecorder && mediaRecorder.state === 'recording') {
-                mediaRecorder.stop();
-              }
-            } catch(e) {
-              showError("Error al detener grabación: " + e.message);
-            }
-          }, 5000);
-        } catch(e) {
-          showError("Error al iniciar grabación: " + e.message);
-        }
+      function selectGlyphForCorrection(g) {
+        selectedGlyph = g; redraw();
+        correctBar.classList.add('show');
+        correctInput.value = g.char || '';
+        correctInput.focus(); correctInput.select();
       }
 
-      function resize() {
-        dpr = Math.min(devicePixelRatio||1, 2.5);
-        cssW = innerWidth; cssH = innerHeight * 3;
-        canvas.width = Math.floor(cssW*dpr); canvas.height = Math.floor(cssH*dpr);
-        canvas.style.width = cssW+'px'; canvas.style.height = cssH+'px';
-        ctx.setTransform(dpr,0,0,dpr,0,0);
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        redraw();
-      }
-      addEventListener('resize', resize);
-      resize();
+      function applyCorrection() {
+        if (!selectedGlyph) return;
+        let ch = (correctInput.value || '').trim().toUpperCase().slice(0,1);
 
-      function clearCanvas() { ctx.fillStyle = '#000'; ctx.fillRect(0,0,cssW,cssH); }
-      function drawStroke(pts, color, w) {
-        if (!pts || pts.length < 2) return;
-        ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = w;
-        ctx.beginPath(); ctx.moveTo(pts[0].x*cssW, pts[0].y*cssH);
-        for (let i=1; i<pts.length; i++) ctx.lineTo(pts[i].x*cssW, pts[i].y*cssH);
-        ctx.stroke(); ctx.restore();
-      }
-      function redraw() {
-        clearCanvas();
-        if (currentPoints.length > 1) {
-          const col = stealthMode ? 'rgba(15,15,15,0.3)' : 'rgba(200,200,200,0.85)';
-          drawStroke(currentPoints, col, stealthMode ? 2.5 : 3.8);
-        }
-      }
-
-      function getPos(e) {
-        const r = canvas.getBoundingClientRect();
-        return {
-          x: Math.max(0, Math.min(1, (e.clientX-r.left)/r.width)),
-          y: Math.max(0, Math.min(1, (e.clientY-r.top)/r.height))
-        };
-      }
-
-      function send(payload) {
-        try { if (bc) bc.postMessage(payload); } catch{}
-        try { if (mqttClient && connectedMqtt) mqttClient.publish(TOPIC, JSON.stringify(payload), {qos:0}); } catch(e) {
-          showError("Error MQTT al enviar: " + e.message);
-        }
-      }
-
-      function start(e) {
-        if (e.target === ui || ui.contains(e.target)) return;
-        if (e.button !== undefined && e.button !== 0) return;
-        if (pauseTimer) clearTimeout(pauseTimer);
-        activePointers.add(e.pointerId);
-
-        if (activePointers.size >= 2) { drawing = false; currentPoints = []; redraw(); clearTimeout(longPressTimer); return; }
-
-        drawing = true; hasMoved = false; startPos = getPos(e); currentPoints = [startPos];
-        clearTimeout(longPressTimer);
-        longPressTimer = setTimeout(() => {
-          if (drawing && !hasMoved && activePointers.size === 1) {
-            drawing = false; currentPoints = []; redraw();
-            send({ type: 'stroke', id: 'cmd_option_' + Date.now(), from: CLIENT_ID, isCommand: 'option', points: [] });
-            if (navigator.vibrate) navigator.vibrate(70);
-          }
-        }, 750);
-      }
-
-      function move(e) {
-        if (activePointers.size >= 2 || !drawing) return;
-        const p = getPos(e);
-        if (startPos && Math.hypot(p.x - startPos.x, p.y - startPos.y) > 0.015) {
-          if (!hasMoved) { hasMoved = true; clearTimeout(longPressTimer); }
-        }
-        const last = currentPoints[currentPoints.length-1];
-        if ((p.x-last.x)**2 + (p.y-last.y)**2 > 0.00003) { currentPoints.push(p); redraw(); }
-      }
-
-      function end(e) {
-        clearTimeout(longPressTimer);
-        const wasTwoFingers = (activePointers.size === 2);
-        activePointers.delete(e.pointerId);
-
-        if (wasTwoFingers && activePointers.size === 0 && !hasMoved) {
-          drawing = false; currentPoints = []; redraw();
+        if (!ch) {
+          glyphs = glyphs.filter(g => g !== selectedGlyph);
+          rebuildTextFromGlyphs();
+          closeCorrectionAndJumpNext();
           return;
         }
 
-        if (!drawing) return; 
-        drawing = false;
-
-        if (!hasMoved && activePointers.size === 0) {
-          const now = Date.now();
-          tapTimestamps.push(now);
-          tapTimestamps = tapTimestamps.filter(t => now - t < 500);
-
-          if (tapTimestamps.length === 3) {
-            tapTimestamps = [];
-            send({ type: 'stroke', id: 'cmd_question_' + Date.now(), from: CLIENT_ID, isCommand: 'question', points: [] });
-            triggerAudioCapture();
-          } else if (tapTimestamps.length === 2) {
-            send({ type: 'stroke', id: 'cmd_newline_' + Date.now(), from: CLIENT_ID, isCommand: 'newline', points: [] });
-            if (navigator.vibrate) navigator.vibrate(45);
-          } else if (tapTimestamps.length === 1) {
-            setTimeout(() => {
-              if (tapTimestamps.length === 1) {
-                tapTimestamps = [];
-                send({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
-                if (navigator.vibrate) navigator.vibrate(20);
-              }
-            }, 200);
-          }
-        }
-
-        if (hasMoved && currentPoints.length >= 2 && activePointers.size === 0) {
-          send({
-            type: 'stroke',
-            id: CLIENT_ID + '-' + Date.now() + '-' + Math.random().toString(36).slice(2,6),
-            from: CLIENT_ID, points: currentPoints, ts: Date.now()
-          });
-
-          if (pauseTimer) clearTimeout(pauseTimer);
-          pauseTimer = setTimeout(() => {
-            send({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
-          }, 700);
-        }
-        currentPoints = []; redraw();
+        selectedGlyph.char = ch;
+        rebuildTextFromGlyphs();
+        memory.push({ char: ch, points: selectedGlyph.normPoints });
+        if (memory.length > 250) memory.shift();
+        localStorage.setItem(LEARN_KEY, JSON.stringify(memory));
+        closeCorrectionAndJumpNext();
       }
 
-      canvas.addEventListener('pointerdown', start);
-      canvas.addEventListener('pointermove', move);
-      canvas.addEventListener('pointerup', end);
+      function closeCorrectionAndJumpNext() {
+        const idx = glyphs.indexOf(selectedGlyph);
+        let next = null;
+        if (idx !== -1) {
+          for (let i = idx + 1; i < glyphs.length; i++) {
+            if (!glyphs[i].isNewline && !glyphs[i].isSpace && !glyphs[i].isTextToken) { next = glyphs[i]; break; }
+          }
+        }
+        if (next) selectGlyphForCorrection(next);
+        else { selectedGlyph = null; correctBar.classList.remove('show'); redraw(); }
+      }
 
-      btnStealth.onclick = () => {
-        stealthMode = !stealthMode;
-        if (stealthMode) { ui.classList.add('hidden'); }
-        else { ui.classList.remove('hidden'); }
-        redraw();
+      function rebuildTextFromGlyphs() {
+        let fullStr = '';
+        for (const g of glyphs) {
+          if (g.isNewline) fullStr += '\n';
+          else if (g.isSpace) fullStr += ' ';
+          else if (g.isTextToken) fullStr += g.text;
+          else fullStr += (g.char || '?');
+        }
+        recognizedText.value = fullStr;
+      }
+
+      btnApplyCorrect.onclick = applyCorrection;
+      correctInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); applyCorrection(); }
+        if (e.key === 'Escape') { selectedGlyph=null; correctBar.classList.remove('show'); redraw(); }
+      });
+      btnCancelCorrect.onclick = () => { selectedGlyph = null; correctBar.classList.remove('show'); redraw(); };
+
+      btnSizeUp.onclick = () => { LETTER_H = Math.min(110, LETTER_H + 8); relayout(); };
+      btnSizeDown.onclick = () => { LETTER_H = Math.max(30, LETTER_H - 8); relayout(); };
+
+      btnQuestion.onclick = () => {
+        recognizedText.value += '\n\nPregunta: ';
+        glyphs.push({ isNewline: true }, { isNewline: true }, { isTextToken: true, text: 'Pregunta: ' });
+        relayout();
+      };
+      btnOption.onclick = () => {
+        recognizedText.value += '( ) ';
+        glyphs.push({ isTextToken: true, text: '( ) ' }, { isSpace: true });
+        relayout();
       };
 
-      try { bc = new BroadcastChannel(BC_NAME); } catch{}
+      btnMemory.onclick = () => { renderGroupedMemory(); memoryModal.classList.add('show'); };
+      btnCloseModal.onclick = () => memoryModal.classList.remove('show');
 
-      function connect() {
-        try {
-          mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
-            clientId: 'm_'+CLIENT_ID, clean:true, connectTimeout:8000, reconnectPeriod:4000
+      function renderGroupedMemory() {
+        memoryListContainer.innerHTML = '';
+        if (memory.length === 0) { memoryListContainer.innerHTML = '<div style="text-align:center; color:#777; padding:15px;">Sin memoria aún.</div>'; return; }
+        const groups = {};
+        memory.forEach((item, originalIndex) => {
+          const c = item.char || '?';
+          if (!groups[c]) groups[c] = [];
+          groups[c].push({ ...item, originalIndex });
+        });
+        Object.keys(groups).sort().forEach(char => {
+          const groupDiv = document.createElement('div'); groupDiv.className = 'memory-group';
+          groupDiv.innerHTML = `<div class="memory-group-title"><span>[ ${char} ] (${groups[char].length})</span></div>`;
+          groups[char].forEach((ex, idx) => {
+            const row = document.createElement('div'); row.className = 'memory-item-row';
+            let svgHtml = `<svg width="26" height="26" viewBox="0 0 1 1" style="background:#000; border-radius:3px;"><path d="M ${ex.points[0].x}${ex.points[0].y}`;
+            for (let i = 1; i < ex.points.length; i++) svgHtml += ` L ${ex.points[i].x}${ex.points[i].y}`;
+            svgHtml += `" stroke="#4ade80" stroke-width="0.08" fill="none"/></svg>`;
+            row.innerHTML = `<div style="display:flex; align-items:center; gap:8px;"><div class="glyph-preview">${svgHtml}</div><span>#${idx+1}</span></div>`;
+            const del = document.createElement('button'); del.className = 'btn danger'; del.style.padding='2px 6px'; del.style.fontSize='10px'; del.textContent='Borrar';
+            del.onclick = () => { memory.splice(ex.originalIndex, 1); localStorage.setItem(LEARN_KEY, JSON.stringify(memory)); renderGroupedMemory(); };
+            row.appendChild(del); groupDiv.appendChild(row);
           });
-          mqttClient.on('connect', () => { connectedMqtt=true; mqttClient.subscribe(TOPIC); statusEl.textContent = '•'; });
-          mqttClient.on('error', (err) => { connectedMqtt=false; statusEl.textContent = '…'; showError("MQTT Error: " + err); });
-        } catch(e) {
-          showError("Excepción conectando MQTT: " + e.message);
-        }
+          memoryListContainer.appendChild(groupDiv);
+        });
       }
-      connect();
-    })();
-  </script>
-</body>
-</html>
+
+      btnExportMem.onclick = () => {
+        const blob = new Blob([JSON.stringify(memory)], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = 'memoria.json'; a.click();
+      };
+      btnImportMem.onchange = (e) => {
+        const f = e.target.files[0]; if (!f) return;
+        const r = new FileReader();
+        r.onload = (ev) => { try { memory = JSON.parse(ev.target.result); localStorage.setItem(LEARN_KEY, JSON.stringify(memory)); renderGroupedMemory(); alert('¡Importado!'); } catch { alert('JSON inválido'); } };
+        r.readAsText(f);
+      };
+
+      btnPdf.onclick = () => {
+        const d = document.createElement('div'); d.style.padding='15px'; d.style.background='#fff'; d.style.color='#000'; d.style.whiteSpace='pre-wrap'; d.textContent=recognizedText.value;
+        html2pdf().from(d).set({margin:10, filename:'examen.pdf'}).save();
+      };
+
+      // Función para procesar y transcribir el audio usando Web Speech API
+      function transcribeAudioBlob(audioBase64, transcriptContainer, audioCardId) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+          transcriptContainer.textContent = "Transcripción automática no soportada en este navegador (usar reproductor de audio).";
+          return;
+        }
+
+        const audioElement = new Audio(audioBase64);
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'es-AR';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+
+        recognition.onresult = (event) => {
+          const text = event.results[0][0].transcript;
+          transcriptContainer.textContent = text;
+          
+          // Insertar en la caja de texto global
+          recognizedText.value += `\n${text}`; recognizedText.scrollTop = recognizedText.scrollHeight; };  recognition.onerror = () => { transcriptContainer.textContent = "Escucha el reproductor de audio arriba para oír el susurro."; };  // Escuchar mientras se reproduce audioElement.onplay = () => { try { recognition.start(); } catch(e){} };  // Auto-reproducción silenciosa breve para intentar transcribir de inmediato audioElement.play().catch(() => { transcriptContainer.textContent = "Haz clic en 'Play' arriba para reproducir y transcribir el susurro."; }); }  // Recepción de mensajes en la PC function handle(data) { if (!data) return; if (data.from === CLIENT_ID) return;  if (data.type === 'audio_blob') { const timestampStr = new Date().toLocaleTimeString(); const cardId = 'card_' + Date.now();  recognizedText.value += `\n\n[AUDIO ${timestampStr}]: `;
+          recognizedText.scrollTop = recognizedText.scrollHeight;
+
+          const card = document.createElement('div');
+          card.className = 'audio-card';
+          card.id = cardId;
+          card.innerHTML = `
+            <b>[\${timestampStr}] Nota
