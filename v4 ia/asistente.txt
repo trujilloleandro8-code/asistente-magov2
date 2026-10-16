@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#000000">
+  <title>Asistente Inteligente</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden; position: fixed;
+      background: #000; color: #e5e5e5; font-family: system-ui, sans-serif;
+      touch-action: none; user-select: none;
+    }
+    #canvasContainer {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 200px;
+      overflow: auto; background: #020202; z-index: 1;
+      touch-action: pan-y;
+    }
+    #canvas { display: block; background: #020202; }
+    #ui {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 30;
+      padding: calc(env(safe-area-inset-top, 8px) + 5px) 8px 6px;
+      display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.93), transparent);
+      pointer-events: auto;
+    }
+    .btn {
+      background: #1a1a1a; color: #eee; border: 1px solid #333;
+      padding: 6px 9px; border-radius: 7px; font-size: 11px; font-weight: 600;
+      cursor: pointer; touch-action: manipulation;
+    }
+    .btn.danger { background: #7f1d1d; border-color: #991b1b; }
+    .btn.primary { background: #065f46; border-color: #047857; }
+    .btn.accent { background: #1e3a8a; border-color: #1d4ed8; }
+    .btn.ai { background: #581c87; border-color: #6b21a8; color: #e9d5ff; }
+    #status { font-size: 11px; opacity: 0.85; margin-left: auto; }
+
+    #textPanel {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 20;
+      background: rgba(0,0,0,0.96); border-top: 1px solid #333;
+      display: flex; flex-direction: column;
+      height: 200px; min-height: 100px; max-height: 80vh;
+    }
+    #dragHandle {
+      height: 20px; background: #111; cursor: ns-resize;
+      display: flex; align-items: center; justify-content: center;
+      color: #4ade80; font-size: 13px; touch-action: none; user-select: none;
+    }
+    #panelContent {
+      flex: 1; padding: 6px 10px calc(env(safe-area-inset-bottom, 6px) + 6px);
+      display: flex; flex-direction: column; gap: 5px; overflow: hidden;
+    }
+    #recognizedText {
+      flex: 1; width: 100%; min-height: 60px;
+      background: #0a0a0a; color: #4ade80; border: 1px solid #333;
+      border-radius: 7px; padding: 8px; font-size: 1.2rem; font-weight: 500;
+      resize: none; outline: none; line-height: 1.4; overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    #correctBar {
+      display: none; gap: 6px; align-items: center; background: #111; padding: 6px; border-radius: 7px;
+    }
+    #correctBar.show { display: flex; }
+    label { font-size: 10px; color: #4ade80; opacity: 0.8; }
+
+    .modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100;
+      display: none; align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal.show { display: flex; }
+    .modal-content {
+      background: #111; border: 1px solid #333; width: 100%; max-width: 500px;
+      max-height: 80vh; border-radius: 10px; display: flex; flex-direction: column; padding: 15px; gap: 10px;
+    }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; }
+    .memory-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .memory-group { background: #161616; border: 1px solid #262626; border-radius: 6px; padding: 8px 10px; }
+    .memory-group-title { font-weight: 700; color: #4ade80; font-size: 14px; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; }
+    .memory-item-row { display: flex; justify-content: space-between; align-items: center; background: #1f1f1f; padding: 6px 10px; border-radius: 4px; font-size: 12px; margin-top: 4px; }
+    .glyph-preview { width: 36px; height: 36px; background: #000; border: 1px solid #333; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+  </style>
+</head>
+<body>
+  <div id="canvasContainer">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div id="ui">
+    <button class="btn danger" id="btnClear">🗑️</button>
+    <button class="btn" id="btnSizeDown">A−</button>
+    <button class="btn" id="btnSizeUp">A+</button>
+    <button class="btn accent" id="btnQuestion">❓ P</button>
+    <button class="btn" id="btnOption">🔹 Op</button>
+    <button class="btn primary" id="btnMemory">🧠 Memoria</button>
+    <button class="btn ai" id="btnAiConfig">🔑 IA</button>
+    <button class="btn ai" id="btnAskAi">✨ Consultar IA</button>
+    <button class="btn" id="btnPdf">📄 PDF</button>
+    <button class="btn primary" id="btnCopy">📋</button>
+    <span id="status">…</span>
+  </div>
+
+  <div id="textPanel">
+    <div id="dragHandle">═══ expandir ═══</div>
+    <div id="panelContent">
+      <div id="correctBar">
+        <label>Corregir (Tab ➡️ Siguiente):</label>
+        <input type="text" id="correctInput" maxlength="1" placeholder="[Vacío=Borrar]" style="width:110px; text-align:center; font-size:14px; font-weight:700;">
+        <button class="btn primary" id="btnApplyCorrect">OK</button>
+        <button class="btn" id="btnCancelCorrect">✕</button>
+      </div>
+      <label>Texto estructurado:</label>
+      <textarea id="recognizedText" placeholder="Escribe preguntas y opciones..."></textarea>
+    </div>
+  </div>
+
+  <!-- MODAL MEMORIA -->
+  <div id="memoryModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 style="font-size: 15px; color: #4ade80;">🧠 Gestor Visual de Memoria</h3>
+        <button class="btn danger" id="btnCloseModal">✕</button>
+      </div>
+      <div style="display:flex; gap: 6px;">
+        <button class="btn primary" id="btnExportMem">📤 Exportar JSON</button>
+        <label class="btn accent" style="cursor:pointer; display:inline-block; margin:0; text-align:center;">
+          📥 Importar <input type="file" id="btnImportMem" accept=".json" style="display:none;">
+        </label>
+      </div>
+      <div class="memory-list" id="memoryListContainer"></div>
+    </div>
+  </div>
+
+  <!-- MODAL CONFIGURACIÓN API KEY DE GOOGLE GEMINI -->
+  <div id="aiModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 style="font-size: 15px; color: #e9d5ff;">✨ Configuración de Asistencia IA (Gemini)</h3>
+        <button class="btn danger" id="btnCloseAiModal">✕</button>
+      </div>
+      <div style="font-size: 12px; color: #aaa; line-height: 1.4;">
+        Ingresa tu clave de Google AI Studio para habilitar el análisis y sugerencias de Gemini. Se guarda solo en tu navegador.
+      </div>
+      <label style="color: #e9d5ff;">Google API Key:</label>
+      <input type="password" id="inputApiKey" placeholder="AQ..." style="background:#1a1a1a; border:1px solid #333; border-radius:5px; color:#fff; padding:8px; font-size:12px; outline:none;" />
+      <button class="btn ai" id="btnSaveApiKey" style="padding: 10px;">💾 Guardar Clave</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
+  <script>
+    (function () {
+      'use strict';
+
+      const SECRET = 'ninja-mago-asistente-privado-2025-x7k9';
+      const TOPIC = `stealthdraw/fixed/${SECRET}`;
+      const BC_NAME = `stealth-fixed-${SECRET}`;
+      const CLIENT_ID = 'asist_' + Math.random().toString(36).slice(2, 9);
+
+      const LEARN_KEY = 'stealth-learn-prototypes-v2';
+      let memory = JSON.parse(localStorage.getItem(LEARN_KEY) || '[]');
+      let googleApiKey = localStorage.getItem('stealth_google_key') || '';
+
+      const container = document.getElementById('canvasContainer');
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+      const statusEl = document.getElementById('status');
+      const btnClear = document.getElementById('btnClear');
+      const btnCopy = document.getElementById('btnCopy');
+      const btnSizeUp = document.getElementById('btnSizeUp');
+      const btnSizeDown = document.getElementById('btnSizeDown');
+      const btnQuestion = document.getElementById('btnQuestion');
+      const btnOption = document.getElementById('btnOption');
+      const btnMemory = document.getElementById('btnMemory');
+      const btnAiConfig = document.getElementById('btnAiConfig');
+      const btnAskAi = document.getElementById('btnAskAi');
+      const btnPdf = document.getElementById('btnPdf');
+      const memoryModal = document.getElementById('memoryModal');
+      const btnCloseModal = document.getElementById('btnCloseModal');
+      const aiModal = document.getElementById('aiModal');
+      const btnCloseAiModal = document.getElementById('btnCloseAiModal');
+      const inputApiKey = document.getElementById('inputApiKey');
+      const btnSaveApiKey = document.getElementById('btnSaveApiKey');
+
+      const btnExportMem = document.getElementById('btnExportMem');
+      const btnImportMem = document.getElementById('btnImportMem');
+      const memoryListContainer = document.getElementById('memoryListContainer');
+      const recognizedText = document.getElementById('recognizedText');
+      const textPanel = document.getElementById('textPanel');
+      const dragHandle = document.getElementById('dragHandle');
+      const correctBar = document.getElementById('correctBar');
+      const correctInput = document.getElementById('correctInput');
+      const btnApplyCorrect = document.getElementById('btnApplyCorrect');
+      const btnCancelCorrect = document.getElementById('btnCancelCorrect');
+
+      let dpr=1, cssW=0, cssH=0;
+      let glyphs = [];
+      let seenIds = new Set();
+      let mqttClient=null, bc=null;
+      let selectedGlyph = null;
+
+      const PAD = 16;
+      let LETTER_H = 56;
+      const GAP = 8;
+      const LINE_GAP = 16;
+      let cursorX = PAD, cursorY = PAD + 20;
+      let totalCanvasHeight = 1000;
+
+      function resize() {
+        dpr = Math.min(devicePixelRatio||1, 2.5);
+        cssW = container.clientWidth || innerWidth;
+        cssH = Math.max(2000, totalCanvasHeight);
+        canvas.width = Math.floor(cssW*dpr); 
+        canvas.height = Math.floor(cssH*dpr);
+        canvas.style.width = cssW+'px'; 
+        canvas.style.height = cssH+'px';
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        relayout();
+      }
+      addEventListener('resize', resize);
+      resize();
+
+      let dragging=false, startY=0, startH=0;
+      dragHandle.addEventListener('pointerdown', e => {
+        dragging=true; startY=e.clientY; startH=textPanel.offsetHeight;
+        dragHandle.setPointerCapture(e.pointerId);
+      });
+      dragHandle.addEventListener('pointermove', e => {
+        if (!dragging) return;
+        const nh = Math.max(100, Math.min(innerHeight*0.8, startH + (startY-e.clientY)));
+        textPanel.style.height = nh + 'px';
+        container.style.bottom = nh + 'px';
+      });
+      dragHandle.addEventListener('pointerup', () => dragging=false);
+
+      function resample(pts, n = 16) {
+        let points = [...pts];
+        let D = 0;
+        for (let i = 1; i < points.length; i++) {
+          D += Math.hypot(points[i].x - points[i-1].x, points[i].y - points[i-1].y);
+        }
+        const I = D / (n - 1);
+        if (I === 0) return points;
+
+        let newPoints = [points[0]];
+        let D_dist = 0;
+        for (let i = 1; i < points.length; i++) {
+          const p1 = points[i-1];
+          const p2 = points[i];
+          const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+          if ((D_dist + d) >= I) {
+            const q = { x: p1.x + ((I - D_dist) / d) * (p2.x - p1.x), y: p1.y + ((I - D_dist) / d) * (p2.y - p1.y) };
+            newPoints.push(q);
+            points.splice(i, 0, q);
+            D_dist = 0;
+          } else {
+            D_dist += d;
+          }
+        }
+        if (newPoints.length === n - 1) newPoints.push(points[points.length - 1]);
+        while (newPoints.length < n) newPoints.push({...points[points.length-1]});
+        return newPoints.slice(0, n);
+      }
+
+      function getBBox(pts) {
+        let minX=1,maxX=0,minY=1,maxY=0;
+        for (const p of pts) {
+          minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x);
+          minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y);
+        }
+        return {minX,maxX,minY,maxY, bw:Math.max(0.01,maxX-minX), bh:Math.max(0.01,maxY-minY)};
+      }
+
+      function normalizeShape(pts) {
+        const bb = getBBox(pts);
+        const res = resample(pts, 16);
+        return res.map(p => ({ x: (p.x - bb.minX) / bb.bw, y: (p.y - bb.minY) / bb.bh }));
+      }
+
+      function classifyByMemory(normPts) {
+        if (memory.length === 0) return null;
+        let bestChar = null;
+        let minDistance = Infinity;
+
+        for (const item of memory) {
+          let dist = 0;
+          for (let i = 0; i < normPts.length; i++) {
+            dist += Math.hypot(normPts[i].x - item.points[i].x, normPts[i].y - item.points[i].y);
+          }
+          if (dist < minDistance) {
+            minDistance = dist;
+            bestChar = item.char;
+          }
+        }
+        if (minDistance < 6.8) return bestChar;
+        return null;
+      }
+
+      function heuristicGuess(pts, bb) {
+        const aspect = bb.bw / bb.bh;
+        if (aspect < 0.35) return 'I';
+        if (aspect > 1.8) return '-';
+        return 'A';
+      }
+
+      function relayout() {
+        cursorX = PAD; cursorY = PAD + 20;
+        for (const g of glyphs) {
+          if (g.isNewline) {
+            cursorX = PAD;
+            cursorY += LETTER_H + LINE_GAP;
+            continue;
+          }
+          if (g.isSpace) {
+            cursorX += LETTER_H * 0.4;
+            continue;
+          }
+          if (g.isTextToken) {
+            cursorX += g.textWidth || (g.text.length * LETTER_H * 0.35);
+            continue;
+          }
+          const aspect = g.bbox ? g.bbox.bw/g.bbox.bh : 1;
+          let gw = LETTER_H * aspect;
+          gw = Math.max(LETTER_H*0.3, Math.min(LETTER_H*1.6, gw));
+
+          if (cursorX + gw > cssW - PAD) {
+            cursorX = PAD; cursorY += LETTER_H + LINE_GAP;
+          }
+          g.x=cursorX; g.y=cursorY; g.w=gw; g.h=LETTER_H;
+          cursorX += gw + GAP;
+        }
+        totalCanvasHeight = Math.max(2000, cursorY + LETTER_H * 3);
+        canvas.height = Math.floor(totalCanvasHeight * dpr);
+        canvas.style.height = totalCanvasHeight + 'px';
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        redraw();
+      }
+
+      function addGlyph(rawPts, id, isCommand=null) {
+        if (seenIds.has(id)) return;
+        seenIds.add(id);
+
+        const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+
+        if (isCommand === 'space') {
+          recognizedText.value += ' ';
+          glyphs.push({ isSpace: true });
+          relayout();
+          if (isNearBottom) container.scrollTop = container.scrollHeight;
+          return;
+        }
+
+        if (isCommand === 'newline') {
+          recognizedText.value += '\n';
+          glyphs.push({ isNewline: true });
+          relayout();
+          recognizedText.scrollTop = recognizedText.scrollHeight;
+          if (isNearBottom) container.scrollTop = container.scrollHeight;
+          return;
+        }
+
+        if (isCommand === 'question') {
+          recognizedText.value += '\n\nPregunta: ';
+          glyphs.push({ isNewline: true }, { isNewline: true }, { isTextToken: true, text: 'Pregunta: ' });
+          relayout();
+          recognizedText.scrollTop = recognizedText.scrollHeight;
+          if (isNearBottom) container.scrollTop = container.scrollHeight;
+          return;
+        }
+
+        if (isCommand === 'option') {
+          recognizedText.value += '( ) ';
+          glyphs.push({ isTextToken: true, text: '( ) ' }, { isSpace: true });
+          relayout();
+          recognizedText.scrollTop = recognizedText.scrollHeight;
+          if (isNearBottom) container.scrollTop = container.scrollHeight;
+          return;
+        }
+
+        const bb = getBBox(rawPts);
+        const norm = normalizeShape(rawPts);
+        const aspect = bb.bw / bb.bh;
+        let gw = LETTER_H * aspect;
+        gw = Math.max(LETTER_H*0.3, Math.min(LETTER_H*1.6, gw));
+
+        if (cursorX + gw > cssW - PAD) {
+          cursorX = PAD; cursorY += LETTER_H + LINE_GAP;
+        }
+
+        const glyph = {
+          rawPoints: rawPts, normPoints: norm, bbox: bb,
+          x: cursorX, y: cursorY, w: gw, h: LETTER_H,
+          char: null, id
+        };
+        glyphs.push(glyph);
+        cursorX += gw + GAP;
+
+        let ch = classifyByMemory(glyph.normPoints) || heuristicGuess(glyph.rawPoints, glyph.bbox);
+        glyph.char = ch;
+        append(ch);
+        relayout();
+        
+        if (isNearBottom) {
+          container.scrollTop = container.scrollHeight;
+        }
+      }
+
+      function append(ch) {
+        recognizedText.value += ch;
+        recognizedText.scrollTop = recognizedText.scrollHeight;
+      }
+
+      function drawGlyph(g, highlight=false) {
+        if (g.isNewline || g.isSpace) return;
+        if (g.isTextToken) {
+          ctx.save();
+          ctx.font = `600 ${LETTER_H * 0.65}px system-ui, sans-serif`;
+          ctx.fillStyle = '#4ade80';
+          ctx.fillText(g.text, g.x, g.y + LETTER_H * 0.7);
+          ctx.restore();
+          return;
+        }
+        if (!g.rawPoints || g.rawPoints.length < 2) return;
+        ctx.save();
+        ctx.strokeStyle = highlight ? '#facc15' : '#4ade80';
+        ctx.lineWidth = Math.max(2.2, g.h/16);
+        ctx.shadowColor = highlight ? '#facc15' : '#4ade80';
+        ctx.shadowBlur = highlight ? 12 : 6;
+        ctx.beginPath();
+        const p0 = g.rawPoints[0];
+        ctx.moveTo(g.x + (p0.x - g.bbox.minX) * (g.w / g.bbox.bw), g.y + (p0.y - g.bbox.minY) * (g.h / g.bbox.bh));
+        for (let i=1; i<g.rawPoints.length; i++) {
+          const p = g.rawPoints[i];
+          ctx.lineTo(g.x + (p.x - g.bbox.minX) * (g.w / g.bbox.bw), g.y + (p.y - g.bbox.minY) * (g.h / g.bbox.bh));
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function redraw() {
+        ctx.fillStyle = '#020202';
+        ctx.fillRect(0, 0, cssW, totalCanvasHeight);
+        for (const g of glyphs) drawGlyph(g, g === selectedGlyph);
+      }
+
+      // --- SELECCIÓN Y NAVEGACIÓN CON TAB ---
+      canvas.addEventListener('pointerdown', (e) => {
+        if (e.button !== undefined && e.button !== 0) return;
+        const r = canvas.getBoundingClientRect();
+        const clickX = e.clientX - r.left;
+        const clickY = e.clientY - r.top;
+
+        for (let i = glyphs.length-1; i >= 0; i--) {
+          const g = glyphs[i];
+          if (g.isNewline || g.isSpace || g.isTextToken) continue;
+          if (clickX >= g.x-6 && clickX <= g.x+g.w+6 && clickY >= g.y-6 && clickY <= g.y+g.h+6) {
+            selectGlyphForCorrection(g);
+            return;
+          }
+        }
+        selectedGlyph = null;
+        correctBar.classList.remove('show');
+        redraw();
+      });
+
+      function selectGlyphForCorrection(g) {
+        selectedGlyph = g;
+        redraw();
+        correctBar.classList.add('show');
+        correctInput.value = g.char || '';
+        correctInput.focus();
+        correctInput.select();
+        statusEl.textContent = 'Corrige (Tab ➡️ Siguiente)…';
+      }
+
+      function applyCorrection() {
+        if (!selectedGlyph) return;
+        let ch = (correctInput.value || '').trim().toUpperCase().slice(0,1);
+
+        if (!ch) {
+          glyphs = glyphs.filter(g => g !== selectedGlyph);
+          rebuildTextFromGlyphs();
+          closeCorrectionAndJumpNext();
+          statusEl.textContent = 'Trazo ignorado/borrado 🗑️';
+          setTimeout(() => statusEl.textContent = '✅ Listo', 1500);
+          return;
+        }
+
+        selectedGlyph.char = ch;
+        rebuildTextFromGlyphs();
+
+        memory.push({ char: ch, points: selectedGlyph.normPoints });
+        if (memory.length > 250) memory.shift();
+        localStorage.setItem(LEARN_KEY, JSON.stringify(memory));
+
+        closeCorrectionAndJumpNext();
+        statusEl.textContent = `Aprendido: ${ch} ✅`;
+        setTimeout(() => statusEl.textContent = '✅ Listo', 1500);
+      }
+
+      function closeCorrectionAndJumpNext() {
+        const currentIndex = glyphs.indexOf(selectedGlyph);
+        let nextGlyph = null;
+        if (currentIndex !== -1) {
+          for (let i = currentIndex + 1; i < glyphs.length; i++) {
+            if (!glyphs[i].isNewline && !glyphs[i].isSpace && !glyphs[i].isTextToken) {
+              nextGlyph = glyphs[i];
+              break;
+            }
+          }
+        }
+
+        if (nextGlyph) {
+          selectGlyphForCorrection(nextGlyph);
+        } else {
+          selectedGlyph = null;
+          correctBar.classList.remove('show');
+          redraw();
+        }
+      }
+
+      function rebuildTextFromGlyphs() {
+        let fullStr = '';
+        for (const g of glyphs) {
+          if (g.isNewline) fullStr += '\n';
+          else if (g.isSpace) fullStr += ' ';
+          else if (g.isTextToken) fullStr += g.text;
+          else fullStr += (g.char || '?');
+        }
+        recognizedText.value = fullStr;
+      }
+
+      btnApplyCorrect.onclick = applyCorrection;
+      
+      correctInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          applyCorrection();
+        }
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          applyCorrection();
+        }
+        if (e.key === 'Escape') { 
+          selectedGlyph=null; 
+          correctBar.classList.remove('show'); 
+          redraw(); 
+        }
+      });
+
+      btnCancelCorrect.onclick = () => { selectedGlyph = null; correctBar.classList.remove('show'); redraw(); };
+
+      btnSizeUp.onclick = () => { LETTER_H = Math.min(110, LETTER_H + 8); relayout(); };
+      btnSizeDown.onclick = () => { LETTER_H = Math.max(30, LETTER_H - 8); relayout(); };
+
+      btnQuestion.onclick = () => {
+        recognizedText.value += '\n\nPregunta: ';
+        glyphs.push({ isNewline: true }, { isNewline: true }, { isTextToken: true, text: 'Pregunta: ' });
+        relayout();
+        recognizedText.scrollTop = recognizedText.scrollHeight;
+      };
+      btnOption.onclick = () => {
+        recognizedText.value += '( ) ';
+        glyphs.push({ isTextToken: true, text: '( ) ' }, { isSpace: true });
+        relayout();
+        recognizedText.scrollTop = recognizedText.scrollHeight;
+      };
+
+      btnMemory.onclick = () => {
+        renderGroupedMemory();
+        memoryModal.classList.add('show');
+      };
+      btnCloseModal.onclick = () => memoryModal.classList.remove('show');
+
+      // --- CONFIGURACIÓN E INTERACCIÓN DE IA (GEMINI 1.5 FLASH) ---
+      btnAiConfig.onclick = () => {
+        inputApiKey.value = googleApiKey;
+        aiModal.classList.add('show');
+      };
+      btnCloseAiModal.onclick = () => aiModal.classList.remove('show');
+
+      btnSaveApiKey.onclick = () => {
+        googleApiKey = inputApiKey.value.trim();
+        localStorage.setItem('stealth_google_key', googleApiKey);
+        aiModal.classList.remove('show');
+        statusEl.textContent = 'API Key guardada ✅';
+        setTimeout(() => statusEl.textContent = '✅ Listo', 1500);
+      };
+
+      btnAskAi.onclick = async () => {
+        const textToAnalyze = recognizedText.value.trim();
+        if (!textToAnalyze) {
+          alert('No hay texto para analizar.');
+          return;
+        }
+        if (!googleApiKey) {
+          alert('Primero configura tu API Key de Google haciendo clic en el botón "🔑 IA".');
+          return;
+        }
+
+        statusEl.textContent = 'Consultando a Gemini...';
+        try {
+          // Corregido al modelo estándar activo 'gemini-1.5-flash'
+          const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${googleApiKey}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: "Eres un asistente táctico de apoyo en tiempo real. Analiza el siguiente texto extraído por OCR a partir de apuntes rápidos a ciegas, interpreta qué quiere preguntar el usuario y dale sugerencias breves y directas sobre qué responder o cómo estructurar su respuesta:\n\n" + textToAnalyze }
+                ]
+              }]
+            })
+          });
+
+          const data = await response.json();
+          if (data.candidates && data.candidates[0].content.parts[0].text) {
+            const aiAnswer = data.candidates[0].content.parts[0].text;
+            recognizedText.value += `\n\n--- [ANÁLISIS GEMINI] ---\n${aiAnswer}\n---------------------`;
+            recognizedText.scrollTop = recognizedText.scrollHeight;
+            statusEl.textContent = 'IA Respondió ✅';
+          } else {
+            throw new Error('Respuesta inválida de la API de Google');
+          }
+        } catch (err) {
+          console.error(err);
+          alert('Error al consultar a Google AI. Revisa tu clave o conexión.');
+          statusEl.textContent = '❌ Error IA';
+        }
+        setTimeout(() => statusEl.textContent = '✅ Listo', 2000);
+      };
+
+      function renderGroupedMemory() {
+        memoryListContainer.innerHTML = '';
+        if (memory.length === 0) {
+          memoryListContainer.innerHTML = '<div style="text-align:center; color:#777; padding:20px;">No hay ejemplos aprendidos aún.</div>';
+          return;
+        }
+
+        const groups = {};
+        memory.forEach((item, originalIndex) => {
+          const c = item.char || '?';
+          if (!groups[c]) groups[c] = [];
+          groups[c].push({ ...item, originalIndex });
+        });
+
+        const sortedKeys = Object.keys(groups).sort();
+
+        sortedKeys.forEach(char => {
+          const groupDiv = document.createElement('div');
+          groupDiv.className = 'memory-group';
+
+          const titleDiv = document.createElement('div');
+          titleDiv.className = 'memory-group-title';
+          titleDiv.innerHTML = `<span>Carácter: <b>[ ${char} ]</b> (${groups[char].length} ejemplos)</span>`;
+          groupDiv.appendChild(titleDiv);
+
+          groups[char].forEach((ex, idx) => {
+            const row = document.createElement('div');
+            row.className = 'memory-item-row';
+            
+            let svgHtml = `<svg width="28" height="28" viewBox="0 0 1 1" style="background:#000; border-radius:3px;">`;
+            if (ex.points && ex.points.length > 1) {
+              svgHtml += `<path d="M ${ex.points[0].x} ${ex.points[0].y}`;
+              for (let i = 1; i < ex.points.length; i++) {
+                svgHtml += ` L ${ex.points[i].x} ${ex.points[i].y}`;
+              }
+              svgHtml += `" stroke="#4ade80" stroke-width="0.08" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+            }
+            svgHtml += `</svg>`;
+
+            const leftBox = document.createElement('div');
+            leftBox.style.display = 'flex';
+            leftBox.style.alignItems = 'center';
+            leftBox.style.gap = '8px';
+            leftBox.innerHTML = `<div class="glyph-preview">${svgHtml}</div><span>Ejemplo #${idx + 1}</span>`;
+            row.appendChild(leftBox);
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'btn danger';
+            delBtn.style.padding = '3px 8px';
+            delBtn.style.fontSize = '10px';
+            delBtn.textContent = 'Eliminar';
+            delBtn.onclick = () => {
+              memory.splice(ex.originalIndex, 1);
+              localStorage.setItem(LEARN_KEY, JSON.stringify(memory));
+              renderGroupedMemory();
+            };
+            row.appendChild(delBtn);
+            groupDiv.appendChild(row);
+          });
+
+          memoryListContainer.appendChild(groupDiv);
+        });
+      }
+
+      btnExportMem.onclick = () => {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(memory));
+        const dlAnchor = document.createElement('a');
+        dlAnchor.setAttribute("href", dataStr);
+        dlAnchor.setAttribute("download", "asistente_memoria_ocr.json");
+        document.body.appendChild(dlAnchor);
+        dlAnchor.click();
+        dlAnchor.remove();
+      };
+
+      btnImportMem.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const imported = JSON.parse(event.target.result);
+            if (Array.isArray(imported)) {
+              memory = imported;
+              localStorage.setItem(LEARN_KEY, JSON.stringify(memory));
+              renderGroupedMemory();
+              alert('¡Memoria importada con éxito!');
+            }
+          } catch { alert('Archivo JSON inválido'); }
+        };
+        reader.readAsText(file);
+      };
+
+      btnPdf.onclick = () => {
+        statusEl.textContent = 'Generando PDF...';
+        const exportContainer = document.createElement('div');
+        exportContainer.style.padding = '20px';
+        exportContainer.style.background = '#ffffff';
+        exportContainer.style.color = '#000000';
+        exportContainer.style.fontSize = '14px';
+        exportContainer.style.whiteSpace = 'pre-wrap';
+        exportContainer.style.fontFamily = 'monospace';
+        exportContainer.textContent = recognizedText.value;
+
+        const opt = {
+          margin:       10,
+          filename:     'cuestionario_asistente.pdf',
+          image:        { type: 'jpeg', quality: 0.98 },
+          html2canvas:  { scale: 2, useCORS: true },
+          jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        };
+
+        html2pdf().from(exportContainer).set(opt).save().then(() => {
+          statusEl.textContent = '✅ Listo';
+        });
+      };
+
+      function handle(data) {
+        if (!data || data.type !== 'stroke') return;
+        if (data.from === CLIENT_ID) return;
+        if (!data.id || seenIds.has(data.id)) return;
+        addGlyph(data.points, data.id, data.isCommand);
+        if (navigator.vibrate) navigator.vibrate(25);
+      }
+
+      try {
+        bc = new BroadcastChannel(BC_NAME);
+        bc.onmessage = e => handle(e.data);
+      } catch{}
+
+      function connect() {
+        try {
+          mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
+            clientId: 'a_'+CLIENT_ID, clean:true, connectTimeout:8000, reconnectPeriod:4000
+          });
+          mqttClient.on('connect', () => {
+            mqttClient.subscribe(TOPIC);
+            statusEl.textContent = '✅ Listo';
+          });
+          mqttClient.on('message', (t, msg) => {
+            try { handle(JSON.parse(msg.toString())); } catch{}
+          });
+        } catch{}
+      }
+      connect();
+
+      btnClear.onclick = () => {
+        glyphs=[]; seenIds.clear();
+        recognizedText.value='';
+        selectedGlyph=null; correctBar.classList.remove('show');
+        relayout();
+      };
+
+      btnCopy.onclick = async () => {
+        const t = recognizedText.value.trim();
+        if (!t) return;
+        try { await navigator.clipboard.writeText(t); statusEl.textContent='Copiado ✅'; }
+        catch { recognizedText.select(); document.execCommand('copy'); statusEl.textContent='Copiado'; }
+        setTimeout(() => statusEl.textContent = '✅ Listo', 1600);
+      };
+    })();
+  </script>
+</body>
+</html>
