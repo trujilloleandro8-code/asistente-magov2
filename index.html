@@ -26,10 +26,10 @@
     #ui.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
     .text-btn { background: transparent; color: #555; border: none; font-size: 11px; font-weight: 500; cursor: pointer; padding: 6px 12px; }
     #status { font-size: 9px; color: #22c55e; }
-    #errorLog {
-      position: fixed; bottom: 40px; left: 10px; right: 10px; z-index: 20;
-      background: rgba(127, 29, 29, 0.9); color: #fff; font-size: 10px; padding: 6px;
-      border-radius: 4px; display: none; pointer-events: none; max-height: 80px; overflow: hidden;
+    #debugBox {
+      position: fixed; top: 60px; left: 10px; right: 10px; z-index: 99;
+      background: rgba(0,0,0,0.85); color: #facc15; font-size: 12px; padding: 8px;
+      border-radius: 5px; pointer-events: none; display: none; text-align: center; font-weight: bold;
     }
   </style>
 </head>
@@ -39,7 +39,7 @@
     <button class="text-btn" id="btnStealth">sigilo</button>
     <span id="status">•</span>
   </div>
-  <div id="errorLog"></div>
+  <div id="debugBox"></div>
 
   <script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
   <script>
@@ -55,39 +55,30 @@
       const ui = document.getElementById('ui');
       const statusEl = document.getElementById('status');
       const btnStealth = document.getElementById('btnStealth');
-      const errorLog = document.getElementById('errorLog');
-
-      function showError(msg) {
-        errorLog.style.display = 'block';
-        errorLog.textContent = 'ERROR: ' + msg;
-        setTimeout(() => { errorLog.style.display = 'none'; }, 6000);
-      }
+      const debugBox = document.getElementById('debugBox');
 
       let dpr=1, cssW=0, cssH=0, drawing=false, currentPoints=[], stealthMode=false;
       let mqttClient=null, bc=null, connectedMqtt=false;
       let longPressTimer = null, hasMoved = false, startPos = null;
       let tapTimestamps = [];
       let activePointers = new Set();
-      let twoFingerTapTimestamps = [];
       let pauseTimer = null;
       
       let mediaRecorder = null;
       let audioChunks = [];
       let audioStream = null;
-      let audioContext = null;
-      let analyser = null;
-      let silenceCheckInterval = null;
-
-      let debugBox = document.createElement('div');
-      debugBox.style.cssText = "position:fixed; top:60px; left:10px; right:10px; z-index:99; background:rgba(0,0,0,0.85); color:#facc15; font-size:12px; padding:8px; border-radius:5px; pointer-events:none; display:none;";
-      document.body.appendChild(debugBox);
+      let isRecording = false;
 
       async function initAudioRecorder() {
         try {
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
           audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
           mediaRecorder = new MediaRecorder(audioStream);
-          mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+          
+          mediaRecorder.ondataavailable = e => { 
+            if (e.data && e.data.size > 0) audioChunks.push(e.data); 
+          };
+          
           mediaRecorder.onstop = () => {
             try {
               const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
@@ -103,91 +94,53 @@
                 });
               };
               reader.readAsDataURL(audioBlob);
-            } catch(ex) {
-              showError("Error procesando audio: " + ex.message);
-            }
+            } catch(ex) {}
           };
-        } catch(err) {
-          showError("Permiso de micrófono denegado: " + err.message);
-        }
+        } catch(err) {}
       }
       initAudioRecorder();
 
       function triggerAudioCapture() {
         if (!mediaRecorder) {
           initAudioRecorder();
-          showError("MediaRecorder no listo.");
           return;
         }
+        if (isRecording) return; // Evitar solapamientos si ya está grabando
+
         try {
           audioChunks = [];
-          if (mediaRecorder.state === 'recording') mediaRecorder.stop();
+          isRecording = true;
           mediaRecorder.start();
           if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
 
-          if (!audioContext && audioStream) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            analyser = audioContext.createAnalyser();
-            const source = audioContext.createMediaStreamSource(audioStream);
-            source.connect(analyser);
-            analyser.fftSize = 256;
-          }
-
-          const startTime = Date.now();
-          const MIN_DURATION = 20000; // 20 segundos mínimo
-          const MAX_DURATION = 60000; // 60 segundos máximo
-          let silentFrames = 0;
-
-          if (silenceCheckInterval) clearInterval(silenceCheckInterval);
           debugBox.style.display = 'block';
+          let timeLeft = 20; // 20 segundos fijos de grabación asegurada
+          debugBox.textContent = `🎙️ Grabando susurro... (${timeLeft}s)`;
 
-          silenceCheckInterval = setInterval(() => {
-            const elapsed = Date.now() - startTime;
-            const remainingSec = Math.max(0, Math.ceil((MIN_DURATION - elapsed) / 1000));
-            
-            if (elapsed < MIN_DURATION) {
-              debugBox.textContent = `🎙️ Grabando (Mínimo: ${remainingSec}s restantes)`;
+          const countdownInterval = setInterval(() => {
+            timeLeft--;
+            if (timeLeft > 0) {
+              debugBox.textContent = `🎙️ Grabando susurro... (${timeLeft}s)`;
             } else {
-              debugBox.textContent = `🎙️ Escuchando silencio para cortar...`;
+              clearInterval(countdownInterval);
             }
+          }, 1000);
 
-            if (elapsed >= MAX_DURATION) {
-              stopRecording("Límite máximo");
-              return;
+          // Forzar parada exacta a los 20 segundos
+          setTimeout(() => {
+            clearInterval(countdownInterval);
+            if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+              isRecording = false;
+              debugBox.textContent = `⏹️ Audio enviado correctamente`;
+              if (navigator.vibrate) navigator.vibrate(100);
+              setTimeout(() => { debugBox.style.display = 'none'; }, 2000);
             }
-
-            if (elapsed >= MIN_DURATION && analyser) {
-              const dataArray = new Uint8Array(analyser.frequencyBinCount);
-              analyser.getByteFrequencyData(dataArray);
-              let sum = 0;
-              for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-              const averageVolume = sum / dataArray.length;
-
-              if (averageVolume < 8) {
-                silentFrames++;
-                if (silentFrames >= 18) { // ~1.8s de silencio continuo
-                  stopRecording("Silencio detectado");
-                }
-              } else {
-                silentFrames = 0;
-              }
-            }
-          }, 100);
-
-          function stopRecording(reason) {
-            if (silenceCheckInterval) clearInterval(silenceCheckInterval);
-            debugBox.textContent = `⏹️ Guardando (${reason})...`;
-            setTimeout(() => { debugBox.style.display = 'none'; }, 2500);
-            try {
-              if (mediaRecorder && mediaRecorder.state === 'recording') {
-                mediaRecorder.stop();
-                if (navigator.vibrate) navigator.vibrate(100);
-              }
-            } catch(e) {}
-          }
+          }, 20000);
 
         } catch(e) {
-          showError("Error al iniciar grabación: " + e.message);
+          isRecording = false;
+          debugBox.style.display = 'none';
         }
       }
 
@@ -263,13 +216,7 @@
 
       function end(e) {
         clearTimeout(longPressTimer);
-        const wasTwoFingers = (activePointers.size === 2);
         activePointers.delete(e.pointerId);
-
-        if (wasTwoFingers && activePointers.size === 0 && !hasMoved) {
-          drawing = false; currentPoints = []; redraw();
-          return;
-        }
 
         if (!drawing) return; 
         drawing = false;
@@ -282,7 +229,7 @@
           if (tapTimestamps.length === 3) {
             tapTimestamps = [];
             send({ type: 'stroke', id: 'cmd_question_' + Date.now(), from: CLIENT_ID, isCommand: 'question', points: [] });
-            triggerAudioCapture();
+            triggerAudioCapture(); // ¡Dispara los 20 segundos de grabación!
           } else if (tapTimestamps.length === 2) {
             send({ type: 'stroke', id: 'cmd_newline_' + Date.now(), from: CLIENT_ID, isCommand: 'newline', points: [] });
             if (navigator.vibrate) navigator.vibrate(45);

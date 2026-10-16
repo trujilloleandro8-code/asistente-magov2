@@ -35,7 +35,6 @@
     #audioPanelContent { padding: 15px; display: flex; flex-direction: column; gap: 10px; color: #fff; }
     .audio-card { background: #111; border: 1px solid #333; padding: 12px; border-radius: 8px; font-size: 13px; line-height: 1.4; display: flex; flex-direction: column; gap: 6px; }
     .audio-card b { color: #4ade80; }
-    .audio-transcript { font-size: 12px; color: #ddd; background: #181818; padding: 6px 8px; border-radius: 4px; border-left: 3px solid #4ade80; margin-top: 4px; }
     audio { width: 100%; height: 32px; margin-top: 4px; }
 
     #ui {
@@ -115,10 +114,10 @@
   <div id="tabContentAudio" class="tab-content">
     <div id="audioPanelContent">
       <div style="font-size: 12px; color: #aaa;">
-        Notas de voz enviadas desde el celular y su transcripción automática:
+        Notas de voz enviadas desde el celular (reproducción directa):
       </div>
       <div id="audioLogContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
-        <div class="audio-card"><i>Esperando audios remotos...</i></div>
+        <div class="audio-card"><i>Esperando notas de voz...</i></div>
       </div>
     </div>
   </div>
@@ -570,69 +569,28 @@
         html2pdf().from(d).set({margin:10, filename:'examen.pdf'}).save();
       };
 
-      // Función para transcribir el audio usando Web Speech API en la PC
-      function transcribeAudioBlob(audioBase64, transcriptContainer) {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-          transcriptContainer.textContent = "Transcripción automática no soportada en este navegador (usa el reproductor arriba).";
-          return;
-        }
-
-        const audioElement = new Audio(audioBase64);
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'es-AR';
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
-
-        recognition.onresult = (event) => {
-          const text = event.results[0][0].transcript;
-          transcriptContainer.textContent = text;
-          
-          recognizedText.value += `\n${text}`;
-          recognizedText.scrollTop = recognizedText.scrollHeight;
-        };
-
-        recognition.onerror = () => {
-          transcriptContainer.textContent = "Escucha el reproductor de audio para oír el susurro.";
-        };
-
-        audioElement.onplay = () => {
-          try { recognition.start(); } catch(e){}
-        };
-        
-        audioElement.play().catch(() => {
-          transcriptContainer.textContent = "Haz clic en 'Play' en el reproductor para escuchar y transcribir.";
-        });
-      }
-
-      // Recepción de mensajes en la PC
+      // Recepción limpia de mensajes y audio en la PC (Sin bloqueos de permisos)
       function handle(data) {
         if (!data) return;
         if (data.from === CLIENT_ID) return;
 
         if (data.type === 'audio_blob') {
           const timestampStr = new Date().toLocaleTimeString();
-          const cardId = 'card_' + Date.now();
           
-          recognizedText.value += `\n\n[AUDIO ${timestampStr}]: `;
+          recognizedText.value += `\n\n[AUDIO RECIBIDO ${timestampStr}]`;
           recognizedText.scrollTop = recognizedText.scrollHeight;
 
           const card = document.createElement('div');
           card.className = 'audio-card';
-          card.id = cardId;
           card.innerHTML = `
             <b>[${timestampStr}] Nota de voz del Mago:</b>
             <audio controls src="${data.audioBase64}"></audio>
-            <div class="audio-transcript" id="trans_${cardId}">Procesando transcripción...</div>
           `;
           
           if (audioLogContainer.querySelector('i')) {
             audioLogContainer.innerHTML = '';
           }
           audioLogContainer.prepend(card);
-
-          const transcriptEl = document.getElementById(`trans_${cardId}`);
-          transcribeAudioBlob(data.audioBase64, transcriptEl);
 
           statusEl.textContent = '🎙️ Audio recibido ✅';
           setTimeout(() => statusEl.textContent = '🟢 Listo', 2000);
