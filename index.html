@@ -1,287 +1,256 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#000000">
-  <title>Mago</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-    html, body {
-      width: 100%; height: 300vh; overflow-x: hidden; overflow-y: auto;
-      background: #000; color: #666; font-family: system-ui, sans-serif; user-select: none;
-    }
-    body::-webkit-scrollbar { display: none; }
-    #canvas { position: absolute; top: 0; left: 0; width: 100%; height: 300vh; touch-action: none; background: #000; z-index: 1; }
-    #ui {
-      position: fixed; top: 0; left: 0; right: 0; height: 50px; z-index: 10;
-      padding: calc(env(safe-area-inset-top, 8px) + 4px) 12px 4px;
-      display: flex; justify-content: space-between; align-items: center;
-      opacity: 0.35; transition: opacity 0.3s; background: rgba(0,0,0,0.5); touch-action: pan-y !important;
-    }
-    #ui:active, #ui:hover { opacity: 0.9; }
-    #ui.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
-    .text-btn { background: transparent; color: #555; border: none; font-size: 11px; font-weight: 500; cursor: pointer; padding: 6px 12px; }
-    #status { font-size: 9px; color: #22c55e; }
-    #errorLog {
-      position: fixed; bottom: 40px; left: 10px; right: 10px; z-index: 20;
-      background: rgba(127, 29, 29, 0.9); color: #fff; font-size: 10px; padding: 6px;
-      border-radius: 4px; display: none; pointer-events: none; max-height: 80px; overflow: hidden;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
+    <title>Asistente Táctico Dual</title>
+
+    <!-- Librería para exportar PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000000;
+            color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        /* Zona táctil gigante para interactuar a ciegas en el bolsillo */
+        #touch-zone {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            padding: 40px 20px;
+            cursor: pointer;
+        }
+
+        .status-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 1.1rem;
+            color: #888;
+        }
+
+        .indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background-color: #333;
+        }
+
+        .indicator.active {
+            background-color: #ff3333;
+            box-shadow: 0 0 15px #ff3333;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+
+        .center-instruction {
+            text-align: center;
+            color: #444;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .transcription-display {
+            width: 100%;
+            max-height: 40vh;
+            overflow-y: auto;
+            font-size: 1.2rem;
+            line-height: 1.5;
+            color: #00ffcc;
+            text-shadow: 0 0 8px rgba(0, 255, 204, 0.3);
+            text-align: center;
+            padding: 10px;
+            word-break: break-word;
+        }
+
+        .timer-display {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #666;
+            font-family: monospace;
+        }
+
+        .timer-display.active {
+            color: #ff3333;
+        }
+    </style>
 </head>
 <body>
-  <canvas id="canvas"></canvas>
-  <div id="ui">
-    <button class="text-btn" id="btnStealth">sigilo</button>
-    <span id="status">•</span>
-  </div>
-  <div id="errorLog"></div>
 
-  <script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
-  <script>
-    (function () {
-      'use strict';
-      const SECRET = 'ninja-mago-asistente-privado-2025-x7k9';
-      const TOPIC = `stealthdraw/fixed/${SECRET}`;
-      const BC_NAME = `stealth-fixed-${SECRET}`;
-      const CLIENT_ID = 'mago_' + Math.random().toString(36).slice(2, 9);
+    <div id="touch-zone">
+        <div class="status-header">
+            <div id="indicador" class="indicator"></div>
+            <span id="estado-texto">TRIPLE TOQUE PARA GRABAR</span>
+        </div>
 
-      const canvas = document.getElementById('canvas');
-      const ctx = canvas.getContext('2d');
-      const ui = document.getElementById('ui');
-      const statusEl = document.getElementById('status');
-      const btnStealth = document.getElementById('btnStealth');
-      const errorLog = document.getElementById('errorLog');
+        <!-- Área donde se muestra el texto reconocido en tiempo real -->
+        <div id="transcripcion" class="transcription-display">
+            ...
+        </div>
 
-      function showError(msg) {
-        errorLog.style.display = 'block';
-        errorLog.textContent = 'ERROR: ' + msg;
-        setTimeout(() => { errorLog.style.display = 'none'; }, 6000);
-      }
+        <div class="center-instruction">
+            [ Toca 3 veces la pantalla ]
+        </div>
 
-      let dpr=1, cssW=0, cssH=0, drawing=false, currentPoints=[], stealthMode=false, lastTapTimes=[];
-      let mqttClient=null, bc=null, connectedMqtt=false;
-      let longPressTimer = null, hasMoved = false, startPos = null;
-      let tapTimestamps = [];
-      let activePointers = new Set();
-      let pauseTimer = null;
-      let mediaRecorder = null;
-      let audioChunks = [];
+        <div id="timer-texto" class="timer-display">
+            00s / 59s
+        </div>
+    </div>
 
-      // Inicializar grabador con control de errores explícito
-      async function initAudioRecorder() {
-        try {
-          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            showError("getUserMedia no soportado en este navegador.");
-            return;
-          }
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          mediaRecorder = new MediaRecorder(stream);
-          mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-          mediaRecorder.onstop = () => {
-            try {
-              const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-              audioChunks = [];
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                send({
-                  type: 'audio_blob',
-                  id: 'audio_' + Date.now(),
-                  from: CLIENT_ID,
-                  audioBase64: reader.result,
-                  ts: Date.now()
-                });
-              };
-              reader.readAsDataURL(audioBlob);
-            } catch(ex) {
-              showError("Error procesando blob de audio: " + ex.message);
+    <script>
+        const touchZone = document.getElementById('touch-zone');
+        const estadoTexto = document.getElementById('estado-texto');
+        const indicador = document.getElementById('indicador');
+        const cajaTranscripcion = document.getElementById('transcripcion');
+        const timerTexto = document.getElementById('timer-texto');
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        let recognition = null;
+        let isRecording = false;
+        let segundero = 0;
+        let timerInterval = null;
+
+        // Detección de triple toque
+        let tapCount = 0;
+        let tapTimer = null;
+
+        // Feedback táctil por vibración (para uso en bolsillo)
+        function vibrar(patron) {
+            if ("vibrate" in navigator) {
+                navigator.vibrate(patron);
             }
-          };
-        } catch(err) {
-          showError("Permiso de micrófono denegado o error: " + err.message);
         }
-      }
-      initAudioRecorder();
 
-      function triggerAudioCapture() {
-        if (!mediaRecorder) {
-          showError("MediaRecorder no inicializado (¿Falta permiso de micro?).");
-          initAudioRecorder(); // Reintentar
-          return;
+        // Inicializar Reconocimiento de Voz
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.lang = 'es-AR';
+            recognition.continuous = true;
+            recognition.interimResults = true;
+
+            recognition.onresult = (event) => {
+                let textoAcumulado = '';
+                for (let i = 0; i < event.results.length; i++) {
+                    textoAcumulado += event.results[i][0].transcript;
+                }
+                cajaTranscripcion.innerText = textoAcumulado;
+            };
+
+            recognition.onerror = (event) => {
+                console.error('Error:', event.error);
+                if (event.error === 'not-allowed') {
+                    vibrar([300, 100, 300]); // Vibración de error
+                    detenerGrabacion();
+                }
+            };
+
+            recognition.onend = () => {
+                if (isRecording && segundero < 59) {
+                    try { recognition.start(); } catch(e) {}
+                }
+            };
+        } else {
+            cajaTranscripcion.innerText = "Reconocimiento de voz no soportado.";
         }
-        try {
-          audioChunks = [];
-          if (mediaRecorder.state === 'recording') mediaRecorder.stop();
-          mediaRecorder.start();
-          if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
-          
-          setTimeout(() => {
+
+        function iniciarGrabacion() {
+            if (isRecording) return;
+
+            isRecording = true;
+            segundero = 0;
+            
+            // Vibración corta doble (avisa al bolsillo que comenzó a grabar)
+            vibrar([100, 50, 100]);
+
+            estadoTexto.innerText = "ESCUCHANDO...";
+            indicador.classList.add('active');
+            timerTexto.classList.add('active');
+            cajaTranscripcion.innerText = "Escuchando...";
+
             try {
-              if (mediaRecorder && mediaRecorder.state === 'recording') {
-                mediaRecorder.stop();
-              }
-            } catch(e) {
-              showError("Error al detener grabación: " + e.message);
+                if (recognition) recognition.start();
+            } catch (e) {
+                console.log(e);
             }
-          }, 5000);
-        } catch(e) {
-          showError("Error al iniciar grabación: " + e.message);
-        }
-      }
 
-      function resize() {
-        dpr = Math.min(devicePixelRatio||1, 2.5);
-        cssW = innerWidth; cssH = innerHeight * 3;
-        canvas.width = Math.floor(cssW*dpr); canvas.height = Math.floor(cssH*dpr);
-        canvas.style.width = cssW+'px'; canvas.style.height = cssH+'px';
-        ctx.setTransform(dpr,0,0,dpr,0,0);
-        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        redraw();
-      }
-      addEventListener('resize', resize);
-      resize();
+            timerInterval = setInterval(() => {
+                segundero++;
+                timerTexto.innerText = `${segundero < 10 ? '0' + segundero : segundero}s / 59s`;
 
-      function clearCanvas() { ctx.fillStyle = '#000'; ctx.fillRect(0,0,cssW,cssH); }
-      function drawStroke(pts, color, w) {
-        if (!pts || pts.length < 2) return;
-        ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = w;
-        ctx.beginPath(); ctx.moveTo(pts[0].x*cssW, pts[0].y*cssH);
-        for (let i=1; i<pts.length; i++) ctx.lineTo(pts[i].x*cssW, pts[i].y*cssH);
-        ctx.stroke(); ctx.restore();
-      }
-      function redraw() {
-        clearCanvas();
-        if (currentPoints.length > 1) {
-          const col = stealthMode ? 'rgba(15,15,15,0.3)' : 'rgba(200,200,200,0.85)';
-          drawStroke(currentPoints, col, stealthMode ? 2.5 : 3.8);
-        }
-      }
-
-      function getPos(e) {
-        const r = canvas.getBoundingClientRect();
-        return {
-          x: Math.max(0, Math.min(1, (e.clientX-r.left)/r.width)),
-          y: Math.max(0, Math.min(1, (e.clientY-r.top)/r.height))
-        };
-      }
-
-      function send(payload) {
-        try { if (bc) bc.postMessage(payload); } catch{}
-        try { if (mqttClient && connectedMqtt) mqttClient.publish(TOPIC, JSON.stringify(payload), {qos:0}); } catch(e) {
-          showError("Error MQTT al enviar: " + e.message);
-        }
-      }
-
-      function start(e) {
-        if (e.target === ui || ui.contains(e.target)) return;
-        if (e.button !== undefined && e.button !== 0) return;
-        if (pauseTimer) clearTimeout(pauseTimer);
-        activePointers.add(e.pointerId);
-
-        if (activePointers.size >= 2) { drawing = false; currentPoints = []; redraw(); clearTimeout(longPressTimer); return; }
-
-        drawing = true; hasMoved = false; startPos = getPos(e); currentPoints = [startPos];
-        clearTimeout(longPressTimer);
-        longPressTimer = setTimeout(() => {
-          if (drawing && !hasMoved && activePointers.size === 1) {
-            drawing = false; currentPoints = []; redraw();
-            send({ type: 'stroke', id: 'cmd_option_' + Date.now(), from: CLIENT_ID, isCommand: 'option', points: [] });
-            if (navigator.vibrate) navigator.vibrate(70);
-          }
-        }, 750);
-      }
-
-      function move(e) {
-        if (activePointers.size >= 2 || !drawing) return;
-        const p = getPos(e);
-        if (startPos && Math.hypot(p.x - startPos.x, p.y - startPos.y) > 0.015) {
-          if (!hasMoved) { hasMoved = true; clearTimeout(longPressTimer); }
-        }
-        const last = currentPoints[currentPoints.length-1];
-        if ((p.x-last.x)**2 + (p.y-last.y)**2 > 0.00003) { currentPoints.push(p); redraw(); }
-      }
-
-      function end(e) {
-        clearTimeout(longPressTimer);
-        const wasTwoFingers = (activePointers.size === 2);
-        activePointers.delete(e.pointerId);
-
-        if (wasTwoFingers && activePointers.size === 0 && !hasMoved) {
-          drawing = false; currentPoints = []; redraw();
-          return;
+                // Límite máximo de 59 segundos
+                if (segundero >= 59) {
+                    detenerGrabacion();
+                }
+            }, 1000);
         }
 
-        if (!drawing) return; 
-        drawing = false;
+        function detenerGrabacion() {
+            if (!isRecording) return;
 
-        if (!hasMoved && activePointers.size === 0) {
-          const now = Date.now();
-          tapTimestamps.push(now);
-          tapTimestamps = tapTimestamps.filter(t => now - t < 500);
+            isRecording = false;
+            clearInterval(timerInterval);
 
-          if (tapTimestamps.length === 3) {
-            tapTimestamps = [];
-            send({ type: 'stroke', id: 'cmd_question_' + Date.now(), from: CLIENT_ID, isCommand: 'question', points: [] });
-            triggerAudioCapture();
-          } else if (tapTimestamps.length === 2) {
-            send({ type: 'stroke', id: 'cmd_newline_' + Date.now(), from: CLIENT_ID, isCommand: 'newline', points: [] });
-            if (navigator.vibrate) navigator.vibrate(45);
-          } else if (tapTimestamps.length === 1) {
-            setTimeout(() => {
-              if (tapTimestamps.length === 1) {
-                tapTimestamps = [];
-                send({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
-                if (navigator.vibrate) navigator.vibrate(20);
-              }
-            }, 200);
-          }
+            // Vibración larga (avisa al bolsillo que se detuvo la grabación)
+            vibrar(300);
+
+            estadoTexto.innerText = "TRIPLE TOQUE PARA GRABAR";
+            indicador.classList.remove('active');
+            timerTexto.classList.remove('active');
+
+            if (recognition) {
+                try { recognition.stop(); } catch(e) {}
+            }
         }
 
-        if (hasMoved && currentPoints.length >= 2 && activePointers.size === 0) {
-          send({
-            type: 'stroke',
-            id: CLIENT_ID + '-' + Date.now() + '-' + Math.random().toString(36).slice(2,6),
-            from: CLIENT_ID, points: currentPoints, ts: Date.now()
-          });
-
-          if (pauseTimer) clearTimeout(pauseTimer);
-          pauseTimer = setTimeout(() => {
-            send({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
-          }, 700);
+        function alternarGrabacion() {
+            if (!isRecording) {
+                iniciarGrabacion();
+            } else {
+                detenerGrabacion();
+            }
         }
-        currentPoints = []; redraw();
-      }
 
-      canvas.addEventListener('pointerdown', start);
-      canvas.addEventListener('pointermove', move);
-      canvas.addEventListener('pointerup', end);
+        // Lógica para detectar triple toque rápido
+        touchZone.addEventListener('click', (e) => {
+            tapCount++;
 
-      btnStealth.onclick = () => {
-        stealthMode = !stealthMode;
-        if (stealthMode) { ui.classList.add('hidden'); }
-        else { ui.classList.remove('hidden'); }
-        redraw();
-      };
-
-      try { bc = new BroadcastChannel(BC_NAME); } catch{}
-
-      function connect() {
-        try {
-          mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
-            clientId: 'm_'+CLIENT_ID, clean:true, connectTimeout:8000, reconnectPeriod:4000
-          });
-          mqttClient.on('connect', () => { connectedMqtt=true; mqttClient.subscribe(TOPIC); statusEl.textContent = '•'; });
-          mqttClient.on('error', (err) => { connectedMqtt=false; statusEl.textContent = '…'; showError("MQTT Error: " + err); });
-        } catch(e) {
-          showError("Excepción conectando MQTT: " + e.message);
-        }
-      }
-      connect();
-    })();
-  </script>
+            if (tapCount === 1) {
+                tapTimer = setTimeout(() => {
+                    tapCount = 0;
+                }, 500); // 500ms para completar los 3 toques
+            } else if (tapCount === 3) {
+                clearTimeout(tapTimer);
+                tapCount = 0;
+                alternarGrabacion();
+            }
+        });
+    </script>
 </body>
 </html>
