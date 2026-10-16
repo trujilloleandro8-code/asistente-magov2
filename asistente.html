@@ -35,6 +35,7 @@
     #audioPanelContent { padding: 15px; display: flex; flex-direction: column; gap: 10px; color: #fff; }
     .audio-card { background: #111; border: 1px solid #333; padding: 12px; border-radius: 8px; font-size: 13px; line-height: 1.4; display: flex; flex-direction: column; gap: 6px; }
     .audio-card b { color: #4ade80; }
+    .audio-transcript { font-size: 12px; color: #ddd; background: #181818; padding: 6px 8px; border-radius: 4px; border-left: 3px solid #4ade80; margin-top: 4px; }
     audio { width: 100%; height: 32px; margin-top: 4px; }
 
     #ui {
@@ -114,7 +115,7 @@
   <div id="tabContentAudio" class="tab-content">
     <div id="audioPanelContent">
       <div style="font-size: 12px; color: #aaa;">
-        Aquí llegarán los audios de los susurros grabados desde el celular al hacer los 3 toques rápidos:
+        Notas de voz enviadas desde el celular y su transcripción automática:
       </div>
       <div id="audioLogContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
         <div class="audio-card"><i>Esperando audios remotos...</i></div>
@@ -250,7 +251,6 @@
       addEventListener('resize', resize);
       resize();
 
-      // Control del panel expandible dinámico (el pizarrón gana espacio al achicar el panel de texto)
       let dragging=false, startY=0, startH=0;
       dragHandle.addEventListener('pointerdown', e => {
         dragging=true; startY=e.clientY; startH=textPanel.offsetHeight;
@@ -570,27 +570,69 @@
         html2pdf().from(d).set({margin:10, filename:'examen.pdf'}).save();
       };
 
-      // Recepción de mensajes en la PC (Audio Blob con reproductor y trazos)
+      // Función para transcribir el audio usando Web Speech API en la PC
+      function transcribeAudioBlob(audioBase64, transcriptContainer) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+          transcriptContainer.textContent = "Transcripción automática no soportada en este navegador (usa el reproductor arriba).";
+          return;
+        }
+
+        const audioElement = new Audio(audioBase64);
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'es-AR';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+
+        recognition.onresult = (event) => {
+          const text = event.results[0][0].transcript;
+          transcriptContainer.textContent = text;
+          
+          recognizedText.value += `\n${text}`;
+          recognizedText.scrollTop = recognizedText.scrollHeight;
+        };
+
+        recognition.onerror = () => {
+          transcriptContainer.textContent = "Escucha el reproductor de audio para oír el susurro.";
+        };
+
+        audioElement.onplay = () => {
+          try { recognition.start(); } catch(e){}
+        };
+        
+        audioElement.play().catch(() => {
+          transcriptContainer.textContent = "Haz clic en 'Play' en el reproductor para escuchar y transcribir.";
+        });
+      }
+
+      // Recepción de mensajes en la PC
       function handle(data) {
         if (!data) return;
         if (data.from === CLIENT_ID) return;
 
-        // Si llega un audio grabado desde el celular
         if (data.type === 'audio_blob') {
           const timestampStr = new Date().toLocaleTimeString();
+          const cardId = 'card_' + Date.now();
           
-          recognizedText.value += `\n\n[AUDIO RECIBIDO ${timestampStr}]`;
+          recognizedText.value += `\n\n[AUDIO ${timestampStr}]: `;
           recognizedText.scrollTop = recognizedText.scrollHeight;
 
           const card = document.createElement('div');
           card.className = 'audio-card';
-          card.innerHTML = `<b>[${timestampStr}] Nota de voz del Mago:</b><br><audio controls src="${data.audioBase64}"></audio>`;
+          card.id = cardId;
+          card.innerHTML = `
+            <b>[${timestampStr}] Nota de voz del Mago:</b>
+            <audio controls src="${data.audioBase64}"></audio>
+            <div class="audio-transcript" id="trans_${cardId}">Procesando transcripción...</div>
+          `;
           
-          // Limpiar texto de "Esperando audios" si es el primero
           if (audioLogContainer.querySelector('i')) {
             audioLogContainer.innerHTML = '';
           }
           audioLogContainer.prepend(card);
+
+          const transcriptEl = document.getElementById(`trans_${cardId}`);
+          transcribeAudioBlob(data.audioBase64, transcriptEl);
 
           statusEl.textContent = '🎙️ Audio recibido ✅';
           setTimeout(() => statusEl.textContent = '🟢 Listo', 2000);
