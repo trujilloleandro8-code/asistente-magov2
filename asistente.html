@@ -33,9 +33,36 @@
     #canvas { display: block; background: #020202; }
 
     #audioPanelContent { padding: 15px; display: flex; flex-direction: column; gap: 10px; color: #fff; }
-    .audio-card { background: #111; border: 1px solid #333; padding: 12px; border-radius: 8px; font-size: 13px; line-height: 1.4; display: flex; flex-direction: column; gap: 6px; }
-    .audio-card b { color: #4ade80; }
+    .audio-card { 
+      background: #111; border: 1px solid #333; padding: 12px; border-radius: 8px; font-size: 13px; 
+      line-height: 1.4; display: flex; flex-direction: column; gap: 6px; transition: border-color 0.3s, background-color 0.3s;
+      position: relative; user-select: none;
+    }
+    .audio-card-header { display: flex; justify-content: space-between; align-items: center; }
+    .audio-card input.title-input {
+      background: transparent; border: none; color: #4ade80; font-weight: bold; font-size: 13px;
+      outline: none; width: 140px;
+    }
+    .audio-card input.title-input:focus { border-bottom: 1px dashed #4ade80; }
     audio { width: 100%; height: 32px; margin-top: 4px; }
+
+    /* Menú contextual personalizado por clic derecho */
+    #contextMenu {
+      position: fixed; display: none; z-index: 1000; background: #1a1a1a; border: 1px solid #444;
+      border-radius: 6px; padding: 5px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); flex-direction: column; gap: 4px;
+    }
+    .color-option {
+      display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 11px;
+      color: #eee; cursor: pointer; border-radius: 4px;
+    }
+    .color-option:hover { background: #333; }
+    .color-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+
+    /* Estilos de colores asignados a las tarjetas */
+    .audio-card.color-red { border-color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+    .audio-card.color-blue { border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
+    .audio-card.color-green { border-color: #22c55e; background: rgba(34, 197, 94, 0.1); }
+    .audio-card.color-default { border-color: #333; background: #111; }
 
     #ui {
       position: absolute; top: 38px; left: 0; right: 0; z-index: 30;
@@ -114,12 +141,20 @@
   <div id="tabContentAudio" class="tab-content">
     <div id="audioPanelContent">
       <div style="font-size: 12px; color: #aaa;">
-        Notas de voz enviadas desde el celular (reproducción directa):
+        Notas de voz recibidas (Clic derecho para cambiar de color):
       </div>
       <div id="audioLogContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
         <div class="audio-card"><i>Esperando notas de voz...</i></div>
       </div>
     </div>
+  </div>
+
+  <!-- Menú Contextual para colores de audio -->
+  <div id="contextMenu">
+    <div class="color-option" onclick="setCardColor('color-default')"><span class="color-dot" style="background:#555;"></span> Normal / Gris</div>
+    <div class="color-option" onclick="setCardColor('color-red')"><span class="color-dot" style="background:#ef4444;"></span> Rojo (No entendí / Revisar)</div>
+    <div class="color-option" onclick="setCardColor('color-blue')"><span class="color-dot" style="background:#3b82f6;"></span> Azul (Ya resuelto)</div>
+    <div class="color-option" onclick="setCardColor('color-green')"><span class="color-dot" style="background:#22c55e;"></span> Verde (Primeras preguntas)</div>
   </div>
 
   <div id="ui">
@@ -221,12 +256,15 @@
       const btnApplyCorrect = document.getElementById('btnApplyCorrect');
       const btnCancelCorrect = document.getElementById('btnCancelCorrect');
       const audioLogContainer = document.getElementById('audioLogContainer');
+      const contextMenu = document.getElementById('contextMenu');
 
       let dpr=1, cssW=0, cssH=0;
       let glyphs = [];
       let seenIds = new Set();
       let mqttClient=null, bc=null;
       let selectedGlyph = null;
+      let targetAudioCard = null;
+      let audioCounter = 0;
 
       const PAD = 16;
       let LETTER_H = 56;
@@ -569,23 +607,48 @@
         html2pdf().from(d).set({margin:10, filename:'examen.pdf'}).save();
       };
 
-      // Recepción limpia de mensajes y audio en la PC (Sin bloqueos de permisos)
+      // Manejo de Clic Derecho para cambiar el color de las tarjetas de audio
+      window.setCardColor = function(colorClass) {
+        if (targetAudioCard) {
+          targetAudioCard.classList.remove('color-default', 'color-red', 'color-blue', 'color-green');
+          targetAudioCard.classList.add(colorClass);
+        }
+        contextMenu.style.display = 'none';
+      };
+
+      document.addEventListener('click', () => { contextMenu.style.display = 'none'; });
+
+      // Recepción limpia de mensajes y audio en la PC
       function handle(data) {
         if (!data) return;
         if (data.from === CLIENT_ID) return;
 
         if (data.type === 'audio_blob') {
+          audioCounter++;
+          const numFormatted = audioCounter < 10 ? '0' + audioCounter : audioCounter;
           const timestampStr = new Date().toLocaleTimeString();
           
-          recognizedText.value += `\n\n[AUDIO RECIBIDO ${timestampStr}]`;
+          recognizedText.value += `\n\n[PREGUNTA ${numFormatted} - ${timestampStr}]`;
           recognizedText.scrollTop = recognizedText.scrollHeight;
 
           const card = document.createElement('div');
-          card.className = 'audio-card';
+          card.className = 'audio-card color-default';
           card.innerHTML = `
-            <b>[${timestampStr}] Nota de voz del Mago:</b>
+            <div class="audio-card-header">
+              <input class="title-input" value="Pregunta ${numFormatted}" />
+              <span style="font-size:10px; opacity:0.6;">${timestampStr}</span>
+            </div>
             <audio controls src="${data.audioBase64}"></audio>
           `;
+
+          // Evento de clic derecho para abrir menú contextual de color
+          card.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            targetAudioCard = card;
+            contextMenu.style.left = e.clientX + 'px';
+            contextMenu.style.top = e.clientY + 'px';
+            contextMenu.style.display = 'flex';
+          });
           
           if (audioLogContainer.querySelector('i')) {
             audioLogContainer.innerHTML = '';
@@ -607,16 +670,4 @@
 
       function connectMqtt() {
         try {
-          mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', { clientId: 'a_'+CLIENT_ID, clean:true, connectTimeout:3000, reconnectPeriod:4000 });
-          mqttClient.on('connect', () => { mqttClient.subscribe(TOPIC); statusEl.textContent = '🟢 Listo'; });
-          mqttClient.on('message', (t, msg) => { try { handle(JSON.parse(msg.toString())); } catch{} });
-        } catch{}
-      }
-      connectMqtt();
-
-      btnClear.onclick = () => { glyphs=[]; seenIds.clear(); recognizedText.value=''; selectedGlyph=null; correctBar.classList.remove('show'); relayout(); };
-      btnCopy.onclick = async () => { await navigator.clipboard.writeText(recognizedText.value); statusEl.textContent='Copiado ✅'; setTimeout(()=>statusEl.textContent='🟢 Listo', 1500); };
-    })();
-  </script>
-</body>
-</html>
+          mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', { clientId: 'a_'+CLIENT_

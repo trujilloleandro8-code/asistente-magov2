@@ -26,11 +26,6 @@
     #ui.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
     .text-btn { background: transparent; color: #555; border: none; font-size: 11px; font-weight: 500; cursor: pointer; padding: 6px 12px; }
     #status { font-size: 9px; color: #22c55e; }
-    #debugBox {
-      position: fixed; top: 60px; left: 10px; right: 10px; z-index: 99;
-      background: rgba(0,0,0,0.85); color: #facc15; font-size: 12px; padding: 8px;
-      border-radius: 5px; pointer-events: none; display: none; text-align: center; font-weight: bold;
-    }
   </style>
 </head>
 <body>
@@ -39,7 +34,6 @@
     <button class="text-btn" id="btnStealth">sigilo</button>
     <span id="status">•</span>
   </div>
-  <div id="debugBox"></div>
 
   <script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
   <script>
@@ -55,7 +49,6 @@
       const ui = document.getElementById('ui');
       const statusEl = document.getElementById('status');
       const btnStealth = document.getElementById('btnStealth');
-      const debugBox = document.getElementById('debugBox');
 
       let dpr=1, cssW=0, cssH=0, drawing=false, currentPoints=[], stealthMode=false;
       let mqttClient=null, bc=null, connectedMqtt=false;
@@ -68,6 +61,7 @@
       let audioChunks = [];
       let audioStream = null;
       let isRecording = false;
+      let recordingTimer = null;
 
       async function initAudioRecorder() {
         try {
@@ -92,6 +86,8 @@
                   audioBase64: reader.result,
                   ts: Date.now()
                 });
+                // Vibración táctil discreta al enviar audio
+                if (navigator.vibrate) navigator.vibrate(100);
               };
               reader.readAsDataURL(audioBlob);
             } catch(ex) {}
@@ -105,42 +101,40 @@
           initAudioRecorder();
           return;
         }
-        if (isRecording) return; // Evitar solapamientos si ya está grabando
 
+        // Si ya está grabando, cortar el audio actual e iniciar el nuevo
+        if (isRecording && mediaRecorder.state === 'recording') {
+          if (recordingTimer) clearTimeout(recordingTimer);
+          mediaRecorder.stop();
+          isRecording = false;
+          // Pequeña pausa para arrancar la siguiente pregunta
+          setTimeout(() => { startNewRecording(); }, 300);
+          return;
+        }
+
+        startNewRecording();
+      }
+
+      function startNewRecording() {
         try {
           audioChunks = [];
           isRecording = true;
           mediaRecorder.start();
+
+          // Vibración táctil corta de inicio
           if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
 
-          debugBox.style.display = 'block';
-          let timeLeft = 20; // 20 segundos fijos de grabación asegurada
-          debugBox.textContent = `🎙️ Grabando susurro... (${timeLeft}s)`;
-
-          const countdownInterval = setInterval(() => {
-            timeLeft--;
-            if (timeLeft > 0) {
-              debugBox.textContent = `🎙️ Grabando susurro... (${timeLeft}s)`;
-            } else {
-              clearInterval(countdownInterval);
-            }
-          }, 1000);
-
-          // Forzar parada exacta a los 20 segundos
-          setTimeout(() => {
-            clearInterval(countdownInterval);
+          // Tiempo máximo de grabación (20 segundos)
+          if (recordingTimer) clearTimeout(recordingTimer);
+          recordingTimer = setTimeout(() => {
             if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
               mediaRecorder.stop();
               isRecording = false;
-              debugBox.textContent = `⏹️ Audio enviado correctamente`;
-              if (navigator.vibrate) navigator.vibrate(100);
-              setTimeout(() => { debugBox.style.display = 'none'; }, 2000);
             }
           }, 20000);
 
         } catch(e) {
           isRecording = false;
-          debugBox.style.display = 'none';
         }
       }
 
@@ -229,7 +223,7 @@
           if (tapTimestamps.length === 3) {
             tapTimestamps = [];
             send({ type: 'stroke', id: 'cmd_question_' + Date.now(), from: CLIENT_ID, isCommand: 'question', points: [] });
-            triggerAudioCapture(); // ¡Dispara los 20 segundos de grabación!
+            triggerAudioCapture(); // Clic/Reinicio de audio
           } else if (tapTimestamps.length === 2) {
             send({ type: 'stroke', id: 'cmd_newline_' + Date.now(), from: CLIENT_ID, isCommand: 'newline', points: [] });
             if (navigator.vibrate) navigator.vibrate(45);
