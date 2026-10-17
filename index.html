@@ -75,7 +75,7 @@
           
           mediaRecorder.onstop = () => {
             try {
-              const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+              const audioBlob = new Blob(audioChunks, { type: (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm' });
               audioChunks = [];
               const reader = new FileReader();
               reader.onloadend = () => {

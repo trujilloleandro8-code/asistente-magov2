@@ -29,7 +29,7 @@
     }
     .tab-content.active { display: block; }
 
-    #canvasContainer { width: 100%; height: 100%; position: relative; touch-action: pan-y; }
+    #canvasContainer { width: 100%; height: 100%; position: relative; touch-action: pan-y; overflow-y: auto; }
     #canvas { display: block; background: #020202; }
 
     #audioPanelContent { padding: 15px; display: flex; flex-direction: column; gap: 10px; color: #fff; }
@@ -45,8 +45,14 @@
     }
     .audio-card input.title-input:focus { border-bottom: 1px dashed #4ade80; }
     audio { width: 100%; height: 32px; margin-top: 4px; }
+    .transcript {
+      margin-top: 4px; padding: 8px 10px; background: rgba(0,0,0,0.35); border-left: 3px solid #4ade80;
+      border-radius: 4px; color: #e5e5e5; font-size: 13px; line-height: 1.45; white-space: pre-wrap;
+      user-select: text; -webkit-user-select: text; cursor: text;
+    }
+    .transcript.pending { color: #aaa; font-style: italic; border-left-color: #facc15; }
+    .transcript.failed { color: #fca5a5; border-left-color: #ef4444; }
 
-    /* Menú contextual personalizado por clic derecho */
     #contextMenu {
       position: fixed; display: none; z-index: 1000; background: #1a1a1a; border: 1px solid #444;
       border-radius: 6px; padding: 5px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); flex-direction: column; gap: 4px;
@@ -58,7 +64,6 @@
     .color-option:hover { background: #333; }
     .color-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
 
-    /* Estilos de colores asignados a las tarjetas */
     .audio-card.color-red { border-color: #ef4444; background: rgba(239, 68, 68, 0.1); }
     .audio-card.color-blue { border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
     .audio-card.color-green { border-color: #22c55e; background: rgba(34, 197, 94, 0.1); }
@@ -67,8 +72,7 @@
     #ui {
       position: absolute; top: 38px; left: 0; right: 0; z-index: 30;
       padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.93), transparent);
-      pointer-events: auto;
+      background: rgba(0,0,0,0.9); border-bottom: 1px solid #222;
     }
     .btn {
       background: #1a1a1a; color: #eee; border: 1px solid #333;
@@ -85,7 +89,6 @@
       position: absolute; left: 0; right: 0; bottom: 0; z-index: 20;
       background: rgba(0,0,0,0.96); border-top: 1px solid #333;
       display: flex; flex-direction: column; height: 200px; min-height: 80px; max-height: 80vh;
-      transition: height 0.1s ease-out;
     }
     #dragHandle {
       height: 18px; background: #111; cursor: ns-resize;
@@ -149,7 +152,6 @@
     </div>
   </div>
 
-  <!-- Menú Contextual para colores de audio -->
   <div id="contextMenu">
     <div class="color-option" onclick="setCardColor('color-default')"><span class="color-dot" style="background:#555;"></span> Normal / Gris</div>
     <div class="color-option" onclick="setCardColor('color-red')"><span class="color-dot" style="background:#ef4444;"></span> Rojo (No entendí / Revisar)</div>
@@ -276,7 +278,7 @@
       function resize() {
         dpr = Math.min(devicePixelRatio||1, 2.5);
         cssW = container.clientWidth || innerWidth;
-        cssH = Math.max(2000, totalCanvasHeight);
+        cssH = Math.max(1000, totalCanvasHeight);
         canvas.width = Math.floor(cssW*dpr); 
         canvas.height = Math.floor(cssH*dpr);
         canvas.style.width = cssW+'px'; 
@@ -297,7 +299,8 @@
         if (!dragging) return;
         const nh = Math.max(80, Math.min(innerHeight*0.85, startH + (startY-e.clientY)));
         textPanel.style.height = nh + 'px';
-        container.style.bottom = nh + 'px';
+        tabContentOcr.style.bottom = nh + 'px';
+        tabContentAudio.style.bottom = nh + 'px';
       });
       dragHandle.addEventListener('pointerup', () => dragging=false);
 
@@ -384,7 +387,7 @@
           g.x=cursorX; g.y=cursorY; g.w=gw; g.h=LETTER_H;
           cursorX += gw + GAP;
         }
-        totalCanvasHeight = Math.max(2000, cursorY + LETTER_H * 3);
+        totalCanvasHeight = Math.max(1000, cursorY + LETTER_H * 3);
         canvas.height = Math.floor(totalCanvasHeight * dpr);
         canvas.style.height = totalCanvasHeight + 'px';
         ctx.setTransform(dpr,0,0,dpr,0,0);
@@ -607,7 +610,6 @@
         html2pdf().from(d).set({margin:10, filename:'examen.pdf'}).save();
       };
 
-      // Manejo de Clic Derecho para cambiar el color de las tarjetas de audio
       window.setCardColor = function(colorClass) {
         if (targetAudioCard) {
           targetAudioCard.classList.remove('color-default', 'color-red', 'color-blue', 'color-green');
@@ -618,7 +620,74 @@
 
       document.addEventListener('click', () => { contextMenu.style.display = 'none'; });
 
-      // Recepción limpia de mensajes y audio en la PC
+      // ============ TRANSCRIPCIÓN LOCAL (Whisper en el navegador) ============
+      // Modelos multilingües: 'Xenova/whisper-tiny' (~40MB, rápido, menos preciso),
+      // 'Xenova/whisper-base' (~80MB, equilibrado), 'Xenova/whisper-small' (~250MB, más preciso, más lento)
+      const WHISPER_MODEL = 'Xenova/whisper-base';
+      const WHISPER_LANG = 'spanish';
+      const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1';
+      let asrPromise = null;
+      let asrQueue = Promise.resolve();
+
+      function loadAsr() {
+        if (!asrPromise) {
+          asrPromise = (async () => {
+            statusEl.textContent = '🧠 Cargando modelo de voz…';
+            const { pipeline, env } = await import(TRANSFORMERS_URL);
+            env.allowLocalModels = false;
+            const p = await pipeline('automatic-speech-recognition', WHISPER_MODEL, {
+              progress_callback: (info) => {
+                if (info && info.status === 'progress' && typeof info.progress === 'number') {
+                  statusEl.textContent = '🧠 Modelo de voz ' + Math.round(info.progress) + '%';
+                }
+              }
+            });
+            statusEl.textContent = '🟢 Listo';
+            return p;
+          })();
+          asrPromise.catch(() => { asrPromise = null; statusEl.textContent = '⚠️ Sin modelo de voz'; });
+        }
+        return asrPromise;
+      }
+
+      async function dataUrlToFloat32(dataUrl) {
+        const buf = await (await fetch(dataUrl)).arrayBuffer();
+        const AC = window.AudioContext || window.webkitAudioContext;
+        const ac = new AC({ sampleRate: 16000 });
+        try {
+          const audio = await ac.decodeAudioData(buf);
+          return audio.getChannelData(0);
+        } finally { try { ac.close(); } catch {} }
+      }
+
+      // Cola: transcribe de a un audio por vez
+      function transcribe(dataUrl) {
+        const job = asrQueue.then(async () => {
+          const asr = await loadAsr();
+          const samples = await dataUrlToFloat32(dataUrl);
+          const out = await asr(samples, { language: WHISPER_LANG, task: 'transcribe', chunk_length_s: 30 });
+          return ((out && out.text) || '').trim();
+        });
+        asrQueue = job.catch(() => {});
+        return job;
+      }
+
+      const PENDING_TXT = '⏳ Transcribiendo...';
+      function applyTranscription(marker, tEl, text, failed) {
+        const finalTxt = failed ? '⚠️ No se pudo transcribir' : (text || '(sin voz detectada)');
+        const pendingBlock = marker + '\n' + PENDING_TXT;
+        if (recognizedText.value.includes(pendingBlock)) {
+          recognizedText.value = recognizedText.value.replace(pendingBlock, () => marker + '\n' + finalTxt);
+        } else {
+          recognizedText.value += '\n\n' + marker + '\n' + finalTxt;
+        }
+        tEl.textContent = finalTxt;
+        tEl.classList.remove('pending');
+        if (failed) tEl.classList.add('failed');
+      }
+
+      loadAsr().catch(() => {}); // precarga el modelo al abrir la página
+
       function handle(data) {
         if (!data) return;
         if (data.from === CLIENT_ID) return;
@@ -628,7 +697,8 @@
           const numFormatted = audioCounter < 10 ? '0' + audioCounter : audioCounter;
           const timestampStr = new Date().toLocaleTimeString();
           
-          recognizedText.value += `\n\n[PREGUNTA ${numFormatted} - ${timestampStr}]`;
+          const marker = `[PREGUNTA ${numFormatted} - ${timestampStr}]`;
+          recognizedText.value += `\n\n${marker}\n${PENDING_TXT}`;
           recognizedText.scrollTop = recognizedText.scrollHeight;
 
           const card = document.createElement('div');
@@ -639,9 +709,10 @@
               <span style="font-size:10px; opacity:0.6;">${timestampStr}</span>
             </div>
             <audio controls src="${data.audioBase64}"></audio>
+            <div class="transcript pending">${PENDING_TXT}</div>
           `;
+          const tEl = card.querySelector('.transcript');
 
-          // Evento de clic derecho para abrir menú contextual de color
           card.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             targetAudioCard = card;
@@ -656,7 +727,11 @@
           audioLogContainer.prepend(card);
 
           statusEl.textContent = '🎙️ Audio recibido ✅';
-          setTimeout(() => statusEl.textContent = '🟢 Listo', 2000);
+          setTimeout(() => { if (statusEl.textContent.startsWith('🎙️')) statusEl.textContent = '🟢 Listo'; }, 2000);
+
+          transcribe(data.audioBase64)
+            .then(text => applyTranscription(marker, tEl, text, false))
+            .catch(err => { console.error('Transcripción falló:', err); applyTranscription(marker, tEl, '', true); });
           return;
         }
 
@@ -670,4 +745,16 @@
 
       function connectMqtt() {
         try {
-          mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', { clientId: 'a_'+CLIENT_
+          mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', { clientId: 'a_'+CLIENT_ID, clean:true, connectTimeout:3000, reconnectPeriod:4000 });
+          mqttClient.on('connect', () => { mqttClient.subscribe(TOPIC); statusEl.textContent = '🟢 Listo'; });
+          mqttClient.on('message', (t, msg) => { try { handle(JSON.parse(msg.toString())); } catch{} });
+        } catch{}
+      }
+      connectMqtt();
+
+      btnClear.onclick = () => { glyphs=[]; seenIds.clear(); recognizedText.value=''; selectedGlyph=null; correctBar.classList.remove('show'); relayout(); };
+      btnCopy.onclick = async () => { await navigator.clipboard.writeText(recognizedText.value); statusEl.textContent='Copiado ✅'; setTimeout(()=>statusEl.textContent='🟢 Listo', 1500); };
+    })();
+  </script>
+</body>
+</html>
