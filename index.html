@@ -57,85 +57,141 @@
       let activePointers = new Set();
       let pauseTimer = null;
       
-      let mediaRecorder = null;
-      let audioChunks = [];
+      // ============ GRABACIÓN DE AUDIO CON CORTE POR SILENCIO (VAD) ============
+      // Ajustes (tocá estos valores si corta muy pronto o tarde)
+      const MAX_RECORD_MS   = 60000; // duración máxima por audio
+      const GRACE_MS        = 4500;  // margen inicial: no se evalúa silencio antes de esto
+      const SILENCE_CUT_MS  = 2300;  // silencio continuo que dispara el corte automático
+      const MIN_THRESHOLD   = 0.008; // umbral mínimo de volumen (RMS 0..1)
+      const MAX_THRESHOLD   = 0.030; // umbral máximo (para no confundir susurros con silencio)
+      const NOISE_FACTOR    = 2.5;   // umbral = ruido de fondo x este factor
+      const AUDIO_BITRATE   = 24000; // bits/s: mantiene el audio chico para MQTT (60s ≈ 180 KB)
+      const VAD_TICK_MS     = 80;
+
       let audioStream = null;
-      let isRecording = false;
-      let recordingTimer = null;
+      let audioCtx = null, analyser = null, vadBuf = null;
+      let noiseFloor = 0.004, levelSmooth = 0;
+      let current = null; // grabación en curso
 
       async function initAudioRecorder() {
         try {
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
-          audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          mediaRecorder = new MediaRecorder(audioStream);
-          
-          mediaRecorder.ondataavailable = e => { 
-            if (e.data && e.data.size > 0) audioChunks.push(e.data); 
-          };
-          
-          mediaRecorder.onstop = () => {
-            try {
-              const audioBlob = new Blob(audioChunks, { type: (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm' });
-              audioChunks = [];
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                send({
-                  type: 'audio_blob',
-                  id: 'audio_' + Date.now(),
-                  from: CLIENT_ID,
-                  audioBase64: reader.result,
-                  ts: Date.now()
-                });
-                // Vibración táctil discreta al enviar audio
-                if (navigator.vibrate) navigator.vibrate(100);
-              };
-              reader.readAsDataURL(audioBlob);
-            } catch(ex) {}
-          };
-        } catch(err) {}
+          audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+          });
+        } catch (err) {}
       }
       initAudioRecorder();
 
-      function triggerAudioCapture() {
-        if (!mediaRecorder) {
-          initAudioRecorder();
-          return;
-        }
+      function setupAnalyser() {
+        if (analyser || !audioStream) return;
+        try {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) return;
+          audioCtx = new AC();
+          const src = audioCtx.createMediaStreamSource(audioStream);
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 2048;
+          analyser.smoothingTimeConstant = 0;
+          src.connect(analyser); // no se conecta a destination: sin eco ni sonido
+          vadBuf = new Float32Array(analyser.fftSize);
+        } catch (e) { analyser = null; }
+      }
 
-        // Si ya está grabando, cortar el audio actual e iniciar el nuevo
-        if (isRecording && mediaRecorder.state === 'recording') {
-          if (recordingTimer) clearTimeout(recordingTimer);
-          mediaRecorder.stop();
-          isRecording = false;
-          // Pequeña pausa para arrancar la siguiente pregunta
-          setTimeout(() => { startNewRecording(); }, 300);
-          return;
-        }
+      function readLevel() {
+        analyser.getFloatTimeDomainData(vadBuf);
+        let sum = 0;
+        for (let i = 0; i < vadBuf.length; i++) sum += vadBuf[i] * vadBuf[i];
+        const rms = Math.sqrt(sum / vadBuf.length);
+        levelSmooth = levelSmooth * 0.6 + rms * 0.4;
+        return levelSmooth;
+      }
 
-        startNewRecording();
+      function vadTick(s) {
+        if (s.done || !analyser) return;
+        const now = performance.now();
+        const elapsed = now - s.startedAt;
+        const lvl = readLevel();
+
+        // Ruido de fondo: baja rápido, sube muy lento (y con tope)
+        if (lvl < noiseFloor) noiseFloor = noiseFloor * 0.5 + lvl * 0.5;
+        else noiseFloor += (lvl - noiseFloor) * 0.0005;
+        noiseFloor = Math.min(noiseFloor, 0.012);
+
+        const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.003));
+
+        if (elapsed < GRACE_MS) { s.silenceSince = null; return; }
+
+        if (lvl < threshold) {
+          if (s.silenceSince === null) s.silenceSince = now;
+          else if (now - s.silenceSince >= SILENCE_CUT_MS) finishRecording(s, false);
+        } else {
+          s.silenceSince = null;
+        }
+      }
+
+      function finishRecording(session, restarting) {
+        if (!session || session.done) return;
+        session.done = true;
+        session.restarting = !!restarting;
+        clearInterval(session.vad);
+        clearTimeout(session.timer);
+        if (current === session) current = null;
+        try { if (session.rec.state !== 'inactive') session.rec.stop(); } catch (e) {}
       }
 
       function startNewRecording() {
-        try {
-          audioChunks = [];
-          isRecording = true;
-          mediaRecorder.start();
+        if (!audioStream) { initAudioRecorder(); return; }
+        setupAnalyser();
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
 
-          // Vibración táctil corta de inicio
-          if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
+        let rec;
+        try { rec = new MediaRecorder(audioStream, { audioBitsPerSecond: AUDIO_BITRATE }); }
+        catch (e) { try { rec = new MediaRecorder(audioStream); } catch (e2) { return; } }
 
-          // Tiempo máximo de grabación (20 segundos)
-          if (recordingTimer) clearTimeout(recordingTimer);
-          recordingTimer = setTimeout(() => {
-            if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
-              mediaRecorder.stop();
-              isRecording = false;
-            }
-          }, 20000);
+        const chunks = [];
+        const session = { rec, startedAt: performance.now(), silenceSince: null, vad: null, timer: null, done: false, restarting: false };
+        levelSmooth = 0;
 
-        } catch(e) {
-          isRecording = false;
+        rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+        rec.onstop = () => {
+          clearInterval(session.vad); clearTimeout(session.timer);
+          try {
+            const audioBlob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+            if (audioBlob.size < 1500) return; // grabación vacía o demasiado corta
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              send({
+                type: 'audio_blob',
+                id: 'audio_' + Date.now(),
+                from: CLIENT_ID,
+                audioBase64: reader.result,
+                ts: Date.now()
+              });
+              // Vibración corta al enviar (si se reinicia, ya vibra el inicio de la nueva)
+              if (!session.restarting && navigator.vibrate) navigator.vibrate(100);
+            };
+            reader.readAsDataURL(audioBlob);
+          } catch (ex) {}
+        };
+
+        try { rec.start(); } catch (e) { return; }
+        current = session;
+        if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
+
+        session.timer = setTimeout(() => finishRecording(session, false), MAX_RECORD_MS);
+        if (analyser) session.vad = setInterval(() => vadTick(session), VAD_TICK_MS);
+      }
+
+      // Triple toque: si graba, corta y envía el actual y arranca uno nuevo desde cero
+      function triggerAudioCapture() {
+        if (!audioStream) { initAudioRecorder(); return; }
+        if (current) {
+          finishRecording(current, true);
+          setTimeout(startNewRecording, 250);
+          return;
         }
+        startNewRecording();
       }
 
       function resize() {
