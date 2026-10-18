@@ -90,7 +90,9 @@
     .btn.primary { background: #065f46; border-color: #047857; }
     .btn.accent { background: #1e3a8a; border-color: #1d4ed8; }
     .hide-on-audio { display: inline-block; }
-    #status { font-size: 11px; opacity: 0.85; margin-left: auto; }
+    #status { font-size: 11px; opacity: 0.85; }
+    #lastAct { font-size: 10px; opacity: 0.6; margin-left: auto; white-space: nowrap; }
+    .btn-del-card { background: #7f1d1d; border: 1px solid #991b1b; color: #fff; border-radius: 5px; font-size: 10px; padding: 2px 7px; cursor: pointer; }
 
     #textPanel {
       position: absolute; left: 0; right: 0; bottom: 0; z-index: 20;
@@ -133,13 +135,21 @@
     .memory-group-title { font-weight: 700; color: #4ade80; font-size: 13px; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; }
     .memory-item-row { display: flex; justify-content: space-between; align-items: center; background: #1f1f1f; padding: 6px 10px; border-radius: 4px; font-size: 12px; margin-top: 4px; }
     .glyph-preview { width: 32px; height: 32px; background: #000; border: 1px solid #333; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+
+    #status.st-ok { color: #4ade80; }
+    #status.st-warn { color: #facc15; }
+    #status.st-err { color: #f87171; }
+    #audioTabBadge {
+      display: none; background: #ef4444; color: #fff; border-radius: 999px;
+      padding: 1px 6px; font-size: 10px; font-weight: 800; margin-left: 5px;
+    }
   </style>
 </head>
 <body>
 
   <div id="tabHeader">
     <button class="tab-btn active" id="btnTabOcr">✏️ Pestaña 1: OCR Local (Mago)</button>
-    <button class="tab-btn" id="btnTabAudio">🎙️ Pestaña 2: Notas de Voz (Susurros)</button>
+    <button class="tab-btn" id="btnTabAudio">🎙️ Pestaña 2: Notas de Voz <span id="audioTabBadge">0</span></button>
   </div>
 
   <div id="tabContentOcr" class="tab-content active">
@@ -152,6 +162,14 @@
     <div id="audioPanelContent">
       <div style="font-size: 12px; color: #aaa;">
         Notas de voz recibidas (Clic derecho: color · Botón verde: transcribir):
+      </div>
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <label style="display:flex; gap:5px; align-items:center; font-size:12px; color:#ccc; cursor:pointer; font-weight:400; opacity:1;">
+          <input type="checkbox" id="chkAutoTranscribe"> Auto-transcribir
+        </label>
+        <label style="display:flex; gap:5px; align-items:center; font-size:12px; color:#ccc; cursor:pointer; font-weight:400; opacity:1;">
+          <input type="checkbox" id="chkAlerts"> 🔔 Alertas sonoras
+        </label>
       </div>
       <div id="audioLogContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
         <div class="audio-card"><i>Esperando notas de voz...</i></div>
@@ -168,14 +186,17 @@
 
   <div id="ui">
     <button class="btn danger" id="btnClear">🗑️</button>
+    <button class="btn" id="btnSync" title="Pedir resincronización a Mago">🔄</button>
+    <button class="btn hide-on-audio" id="btnUndo">↩</button>
     <button class="btn hide-on-audio" id="btnSizeDown">A−</button>
     <button class="btn hide-on-audio" id="btnSizeUp">A+</button>
     <button class="btn accent" id="btnQuestion">❓ P</button>
     <button class="btn hide-on-audio" id="btnOption">🔹 Op</button>
     <button class="btn primary hide-on-audio" id="btnMemory">🧠 Memoria</button>
-    <button class="btn hide-on-audio" id="btnPdf">📄 PDF</button>
+    <button class="btn primary hide-on-audio" id="btnPdf">📄 PDF</button>
     <button class="btn primary hide-on-audio" id="btnCopy">📋</button>
-    <span id="status">🟢 Listo</span>
+    <span id="lastAct"></span>
+    <span id="status" class="st-warn">⏳ Conectando…</span>
   </div>
 
   <div id="textPanel">
@@ -218,6 +239,15 @@
       const BC_NAME = `stealth-fixed-${SECRET}`;
       const CLIENT_ID = 'asist_' + Math.random().toString(36).slice(2, 9);
 
+      // Título de pestaña como señal de alerta: si llega un audio con esta pestaña
+      // en segundo plano, el navegador muestra "🎙️ 03 · Asistente" en la barra.
+      const BASE_TITLE = document.title;
+      function flashTitle(msg) {
+        if (document.visibilityState === 'visible') return; // en primer plano ya lo ve
+        document.title = msg;
+      }
+      function restoreTitle() { document.title = BASE_TITLE; }
+
       const LEARN_KEY = 'stealth-learn-prototypes-v2';
       let memory = JSON.parse(localStorage.getItem(LEARN_KEY) || '[]');
 
@@ -226,6 +256,16 @@
       const tabContentOcr = document.getElementById('tabContentOcr');
       const tabContentAudio = document.getElementById('tabContentAudio');
       const hideOnAudioElements = document.querySelectorAll('.hide-on-audio');
+      const audioTabBadge = document.getElementById('audioTabBadge');
+
+      function updateBadge() {
+        if (unseenAudio > 0) {
+          audioTabBadge.style.display = 'inline-block';
+          audioTabBadge.textContent = unseenAudio > 99 ? '99+' : String(unseenAudio);
+        } else {
+          audioTabBadge.style.display = 'none';
+        }
+      }
 
       btnTabOcr.onclick = () => {
         btnTabOcr.classList.add('active'); btnTabAudio.classList.remove('active');
@@ -237,6 +277,7 @@
         btnTabAudio.classList.add('active'); btnTabOcr.classList.remove('active');
         tabContentAudio.classList.add('active'); tabContentOcr.classList.remove('active');
         hideOnAudioElements.forEach(el => el.style.display = 'none');
+        unseenAudio = 0; updateBadge();
       };
 
       const container = document.getElementById('canvasContainer');
@@ -251,6 +292,8 @@
       const btnOption = document.getElementById('btnOption');
       const btnMemory = document.getElementById('btnMemory');
       const btnPdf = document.getElementById('btnPdf');
+      const btnUndo = document.getElementById('btnUndo');
+      const lastActEl = document.getElementById('lastAct');
       const memoryModal = document.getElementById('memoryModal');
       const btnCloseModal = document.getElementById('btnCloseModal');
 
@@ -269,14 +312,144 @@
 
       let dpr=1, cssW=0, cssH=0;
       let glyphs = [];
-      let seenIds = new Set();
-      let mqttClient=null, bc=null;
+      let mqttClient=null, bc=null, connectedMqtt=false;
       let selectedGlyph = null;
       let targetAudioCard = null;
       let audioCounter = 0;
 
+      // Deduplicación por ID: Mago envía por BroadcastChannel Y MQTT a la vez,
+      // así que cada mensaje puede llegar dos veces en equipos de la misma red local.
+      function makeIdSet(cap) {
+        const set = new Set(), order = [];
+        return {
+          has: (id) => set.has(id),
+          remember(id) {
+            if (!id || set.has(id)) return false;
+            set.add(id); order.push(id);
+            if (order.length > cap) { for (const old of order.splice(0, Math.floor(cap * 0.3))) set.delete(old); }
+            return true;
+          },
+          list() { return order.slice(-800); },
+          load(ids) { if (Array.isArray(ids)) for (const id of ids) this.remember(id); },
+          clear() { set.clear(); order.length = 0; }
+        };
+      }
+      const strokeIds = makeIdSet(5000);
+      const audioIds = makeIdSet(300);
+      const transcribeBlocks = new Map(); // marker -> longitud del bloque insertado
+
+      const SESSION_KEY = 'stealth-asistente-session-v1';
+      let restoredPrefix = '';
+      let saveTimer = null;
+      let unseenAudio = 0;
+      let linkState = 'init'; // init | mqtt | reconnect | local | down
+      let statusToken = 0;
+
+      // ============ ACTIVIDAD DE MAGO (último contacto + contadores) ============
+      let lastMsgAt = 0;
+      let strokeCount = 0, audioCount = 0;
+      let magoAlive = false; // ¿Mago respondió en los últimos 12s? (ping/pong cada 4s)
+      function updateLastAct() {
+        if (!lastMsgAt) { lastActEl.textContent = ''; return; }
+        const s = Math.round((Date.now() - lastMsgAt) / 1000);
+        const ago = s < 5 ? 'ahora' : (s < 60 ? 'hace ' + s + 's' : 'hace ' + Math.floor(s / 60) + 'm');
+        lastActEl.textContent = `· ✏️${strokeCount} 🎙️${audioCount} · ${ago}`;
+        const alive = s < 12;
+        if (alive !== magoAlive) {
+          const revived = alive && !magoAlive;
+          magoAlive = alive; setLink();
+          // Mago volvió tras estar mudo: pide todo de nuevo por si perdimos trazas
+          if (revived) { lastSyncSent = 0; requestSync(); }
+        }
+      }
+      setInterval(updateLastAct, 2000);
+
+      // ============ ESTADO DEL ENLACE (MQTT / Local) ============
+      function linkText() {
+        const magoDown = lastMsgAt > 0 && !magoAlive;
+        if (linkState === 'mqtt') return magoDown ? '⚠️ Mago sin respuesta' : '🔗 Enlace activo';
+        if (linkState === 'reconnect') return '🔄 Reconectando…';
+        if (linkState === 'local') return magoDown ? '📡 Local · Mago sin respuesta' : '📡 Solo local';
+        if (linkState === 'down') return bc ? '⚠️ MQTT caído · local OK' : '⚠️ Sin enlace';
+        return '⏳ Conectando…';
+      }
+      function paintStatus(txt) {
+        statusEl.textContent = txt;
+        const magoDown = lastMsgAt > 0 && !magoAlive;
+        statusEl.className = (linkState === 'mqtt' && !magoDown) ? 'st-ok'
+          : ((linkState === 'down' || magoDown) ? 'st-err' : 'st-warn');
+      }
+      function setLink() { statusToken++; paintStatus(linkText()); }
+      function setStatus(txt, revertMs) {
+        statusToken++; paintStatus(txt);
+        if (revertMs) {
+          const t = statusToken;
+          setTimeout(() => { if (t === statusToken) paintStatus(linkText()); }, revertMs);
+        }
+      }
+
+      // ============ PERSISTENCIA DE SESIÓN (sobrevive a F5) ============
+      function scheduleSave() {
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(saveSession, 400);
+      }
+      function saveSession() {
+        try {
+          localStorage.setItem(SESSION_KEY, JSON.stringify({
+            text: recognizedText.value,
+            counter: audioCounter,
+            strokes: strokeCount,
+            letterH: LETTER_H,
+            strokeIds: strokeIds.list(),
+            audioIds: audioIds.list()
+          }));
+        } catch (e) {}
+      }
+      let pendingLetterH = null;
+      try {
+        const saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+        if (saved && typeof saved.text === 'string' && saved.text) {
+          restoredPrefix = saved.text;
+          if (!/\s$/.test(restoredPrefix)) restoredPrefix += ' ';
+          recognizedText.value = restoredPrefix;
+          audioCounter = saved.counter || 0;
+          audioCount = audioCounter;
+          strokeCount = saved.strokes || 0;
+          if (typeof saved.letterH === 'number' && saved.letterH >= 30 && saved.letterH <= 110) pendingLetterH = saved.letterH;
+          strokeIds.load(saved.strokeIds);
+          audioIds.load(saved.audioIds);
+        }
+      } catch (e) {}
+
+      // Guardado inmediato al perder visibilidad / cerrar: el debounce de 400ms
+      // solo cubre edición continua; sin esto se perdían los últimos cambios en F5.
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') saveSession();
+      });
+      window.addEventListener('pagehide', saveSession);
+      window.addEventListener('beforeunload', saveSession);
+
+      function appendText(str) {
+        recognizedText.value += str;
+        try { recognizedText.scrollTop = recognizedText.scrollHeight; } catch (e) {}
+        scheduleSave();
+      }
+
+      // ============ PANTALLA SIEMPRE ENCENDIDA DURANTE EL EXAMEN ============
+      let screenLock = null;
+      function keepScreenOn() {
+        try {
+          if (navigator.wakeLock && document.visibilityState === 'visible') {
+            navigator.wakeLock.request('screen').then(lock => { screenLock = lock; }).catch(() => {});
+          }
+        } catch (e) {}
+      }
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepScreenOn(); });
+      keepScreenOn();
+
       const PAD = 16;
       let LETTER_H = 56;
+      if (pendingLetterH) LETTER_H = pendingLetterH; // restaura tamaño de letra del examen
       const GAP = 8;
       const LINE_GAP = 16;
       let cursorX = PAD, cursorY = PAD + 20;
@@ -402,36 +575,20 @@
       }
 
       function addGlyph(rawPts, id, isCommand=null) {
-        if (seenIds.has(id)) return;
-        seenIds.add(id);
+        if (!strokeIds.remember(id)) return;
 
         const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
 
-        if (isCommand === 'space') {
-          recognizedText.value += ' ';
-          glyphs.push({ isSpace: true });
-          relayout();
-          return;
+        if (isCommand) {
+          if (isCommand === 'space') { appendText(' '); glyphs.push({ isSpace: true }); relayout(); return; }
+          if (isCommand === 'newline') { appendText('\n'); glyphs.push({ isNewline: true }); relayout(); return; }
+          if (isCommand === 'question') { appendText('\n\nPregunta: '); glyphs.push({ isNewline: true }, { isNewline: true }, { isTextToken: true, text: 'Pregunta: ' }); relayout(); return; }
+          if (isCommand === 'option') { insertOptionToken(); return; }
+          if (isCommand === 'clear') { clearAll(); return; }
+          return; // comando desconocido: se ignora sin corromper el texto
         }
 
-        if (isCommand === 'newline') {
-          recognizedText.value += '\n';
-          glyphs.push({ isNewline: true });
-          relayout();
-          return;
-        }
-
-        if (isCommand === 'question') {
-          recognizedText.value += '\n\nPregunta: ';
-          glyphs.push({ isNewline: true }, { isNewline: true }, { isTextToken: true, text: 'Pregunta: ' });
-          relayout();
-          return;
-        }
-
-        if (isCommand === 'clear') {
-          glyphs=[]; seenIds.clear(); recognizedText.value=''; selectedGlyph=null; correctBar.classList.remove('show'); relayout();
-          return;
-        }
+        if (!rawPts || rawPts.length < 2) return;
 
         const bb = getBBox(rawPts);
         const norm = normalizeShape(rawPts);
@@ -446,7 +603,7 @@
 
         let ch = classifyByMemory(glyph.normPoints) || heuristicGuess(glyph.rawPoints, glyph.bbox);
         glyph.char = ch;
-        recognizedText.value += ch;
+        appendText(ch);
         relayout();
         
         if (isNearBottom) container.scrollTop = container.scrollHeight;
@@ -539,16 +696,49 @@
         else { selectedGlyph = null; correctBar.classList.remove('show'); redraw(); }
       }
 
-      function rebuildTextFromGlyphs() {
-        let fullStr = '';
+      function buildGlyphText() {
+        let s = '';
         for (const g of glyphs) {
-          if (g.isNewline) fullStr += '\n';
-          else if (g.isSpace) fullStr += ' ';
-          else if (g.isTextToken) fullStr += g.text;
-          else fullStr += (g.char || '?');
+          if (g.isNewline) s += '\n';
+          else if (g.isSpace) s += ' ';
+          else if (g.isTextToken) s += g.text;
+          else s += (g.char || '?');
         }
-        recognizedText.value = fullStr;
+        return s;
       }
+
+      function rebuildTextFromGlyphs() {
+        recognizedText.value = restoredPrefix + buildGlyphText();
+        try { recognizedText.scrollTop = recognizedText.scrollHeight; } catch (e) {}
+        scheduleSave();
+      }
+
+      function clearAll() {
+        // strokeIds NO se limpia a propósito: actúa como lista negra de IDs.
+        // Si se vaciara, la próxima resincronización de Mago reenviaría las trazas
+        // viejas de su buffer y "revivirían" el texto ya borrado.
+        glyphs = []; restoredPrefix = '';
+        transcribeBlocks.clear();
+        recognizedText.value = ''; selectedGlyph = null;
+        correctBar.classList.remove('show');
+        relayout(); scheduleSave();
+      }
+
+      function insertOptionToken() {
+        appendText('( ) ');
+        glyphs.push({ isTextToken: true, text: '( ) ' });
+        relayout();
+      }
+
+      // Sincroniza ediciones manuales del textarea con el prefijo restaurado
+      recognizedText.addEventListener('input', () => {
+        const built = buildGlyphText();
+        if (glyphs.length === 0) restoredPrefix = recognizedText.value;
+        else if (built && recognizedText.value.endsWith(built)) {
+          restoredPrefix = recognizedText.value.slice(0, recognizedText.value.length - built.length);
+        }
+        scheduleSave();
+      });
 
       btnApplyCorrect.onclick = applyCorrection;
       correctInput.addEventListener('keydown', e => {
@@ -561,18 +751,16 @@
       btnSizeDown.onclick = () => { LETTER_H = Math.max(30, LETTER_H - 8); relayout(); };
 
       btnQuestion.onclick = () => {
-        recognizedText.value += '\n\nPregunta: ';
+        appendText('\n\nPregunta: ');
         glyphs.push({ isNewline: true }, { isNewline: true }, { isTextToken: true, text: 'Pregunta: ' });
         relayout();
       };
-      btnOption.onclick = () => {
-        recognizedText.value += '( ) ';
-        glyphs.push({ isTextToken: true, text: '( ) ' }, { isSpace: true });
-        relayout();
-      };
+      btnOption.onclick = insertOptionToken;
 
       btnMemory.onclick = () => { renderGroupedMemory(); memoryModal.classList.add('show'); };
       btnCloseModal.onclick = () => memoryModal.classList.remove('show');
+      // Cerrar tocando fuera del panel (sin cerrar al tocar dentro)
+      memoryModal.addEventListener('pointerdown', (e) => { if (e.target === memoryModal) memoryModal.classList.remove('show'); });
 
       function renderGroupedMemory() {
         memoryListContainer.innerHTML = '';
@@ -621,6 +809,15 @@
         if (targetAudioCard) {
           targetAudioCard.classList.remove('color-default', 'color-red', 'color-blue', 'color-green');
           targetAudioCard.classList.add(colorClass);
+          // Persiste el color haciendo merge con la nota guardada (put reemplaza
+          // el registro entero: hay que conservar audioBase64/ts originales)
+          const noteId = targetAudioCard.dataset && targetAudioCard.dataset.noteId;
+          if (noteId) {
+            noteGet(noteId).then(existing => {
+              if (!existing) return;
+              notePut({ ...existing, color: colorClass });
+            });
+          }
         }
         contextMenu.style.display = 'none';
       };
@@ -639,20 +836,20 @@
       function loadAsr() {
         if (!asrPromise) {
           asrPromise = (async () => {
-            statusEl.textContent = '🧠 Cargando modelo de voz…';
+            setStatus('🧠 Cargando modelo de voz…');
             const { pipeline, env } = await import(TRANSFORMERS_URL);
             env.allowLocalModels = false;
             const p = await pipeline('automatic-speech-recognition', WHISPER_MODEL, {
               progress_callback: (info) => {
                 if (info && info.status === 'progress' && typeof info.progress === 'number') {
-                  statusEl.textContent = '🧠 Modelo de voz ' + Math.round(info.progress) + '%';
+                  setStatus('🧠 Modelo de voz ' + Math.round(info.progress) + '%');
                 }
               }
             });
-            statusEl.textContent = '🟢 Listo';
+            setLink();
             return p;
           })();
-          asrPromise.catch(() => { asrPromise = null; statusEl.textContent = '⚠️ Sin modelo de voz'; });
+          asrPromise.catch(() => { asrPromise = null; setStatus('⚠️ Sin modelo de voz', 5000); });
         }
         return asrPromise;
       }
@@ -688,107 +885,422 @@
         if (state) tEl.classList.add(state);
       }
 
-      // Inserta o reemplaza el bloque del marcador en el texto global (sin duplicar en reintentos)
+      // Inserta o reemplaza el bloque del marcador en el texto global SIN tocar
+      // el texto que se haya escrito después de esa transcripción (trazos, otras preguntas…)
       function upsertTranscription(marker, txt) {
         const block = marker + '\n' + txt;
-        const idx = recognizedText.value.lastIndexOf(marker);
+        const val = recognizedText.value;
+        const idx = val.lastIndexOf(marker);
         if (idx === -1) {
-          recognizedText.value += '\n\n' + block;
+          recognizedText.value = (val ? val + '\n\n' : '') + block;
         } else {
-          recognizedText.value = recognizedText.value.slice(0, idx) + block;
+          let tail;
+          const len = transcribeBlocks.get(marker) || 0;
+          if (len > 0) tail = val.slice(idx + len);
+          else {
+            const next = val.indexOf('\n\n[PREGUNTA ', idx + marker.length);
+            tail = next === -1 ? '' : val.slice(next);
+          }
+          recognizedText.value = val.slice(0, idx) + block + tail;
         }
+        transcribeBlocks.set(marker, block.length);
+        try { recognizedText.scrollTop = recognizedText.scrollHeight; } catch (e) {}
+        scheduleSave();
       }
 
       loadAsr().catch(() => {}); // precarga el modelo al abrir la página
+
+      // ============ ENLACE BIDIRECCIONAL (presencia + resincronización) ============
+      const chkAuto = document.getElementById('chkAutoTranscribe');
+      const chkAlerts = document.getElementById('chkAlerts');
+      try {
+        chkAuto.checked = localStorage.getItem('stealth-asist-autotrans') === '1';
+        chkAlerts.checked = localStorage.getItem('stealth-asist-alerts') === '1';
+      } catch (e) {}
+      chkAuto.onchange = () => { try { localStorage.setItem('stealth-asist-autotrans', chkAuto.checked ? '1' : '0'); } catch (e) {} };
+      chkAlerts.onchange = () => {
+        try { localStorage.setItem('stealth-asist-alerts', chkAlerts.checked ? '1' : '0'); } catch (e) {}
+        if (chkAlerts.checked) beep(); // prueba de sonido al activar
+      };
+
+      function send(payload) {
+        payload.from = CLIENT_ID;
+        try { if (bc) bc.postMessage(payload); } catch (e) {}
+        try { if (mqttClient && connectedMqtt) mqttClient.publish(TOPIC, JSON.stringify(payload), { qos: 1 }); } catch (e) {}
+      }
+
+      function beep() {
+        if (!chkAlerts.checked) return;
+        try {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) return;
+          const ac = new AC();
+          if (ac.state === 'suspended') ac.resume().catch(() => {});
+          const t = ac.currentTime;
+          [0, 0.18].forEach((d, i) => {
+            const o = ac.createOscillator(), g = ac.createGain();
+            o.type = 'sine'; o.frequency.value = i === 0 ? 880 : 1320;
+            g.gain.setValueAtTime(0.0001, t + d);
+            g.gain.exponentialRampToValueAtTime(0.25, t + d + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.14);
+            o.connect(g); g.connect(ac.destination);
+            o.start(t + d); o.stop(t + d + 0.16);
+          });
+          setTimeout(() => { try { ac.close(); } catch (e) {} }, 600);
+        } catch (e) {}
+      }
+
+      let lastSyncSent = 0;
+      function requestSync() {
+        const now = Date.now();
+        if (now - lastSyncSent < 3000) return; // evita tormentas de sync
+        lastSyncSent = now;
+        send({ type: 'sync_request', haveAudio: audioIds.list(), ts: now });
+        setStatus('🔄 Resincronizando…', 2000);
+      }
+      document.getElementById('btnSync').onclick = () => { lastSyncSent = 0; requestSync(); };
+
+      // Ping periódico: Mago responde "pong" y así sabemos que sigue vivo aunque no dibuje.
+      // Si además lleva >15s sin contestar (o nunca lo vimos), se reenvía "hello" para
+      // que él reconteste y dispare su resincronización: cubre el caso en que nuestro
+      // hello inicial salió antes de que Mago se suscribiera al tópico.
+      setInterval(() => {
+        send({ type: 'ping', ts: Date.now() });
+        if (Date.now() - lastMsgAt > 15000) send({ type: 'hello', ts: Date.now() });
+      }, 4000);
+
+      // Re-sincroniza al volver la red o al recuperar la pestaña.
+      // Se envía además "hello" para que Mago también nos pida lo que LE falte
+      // (sus trazas siguen en su buffer; nuestros audios pueden faltarle a él).
+      window.addEventListener('online', () => {
+        linkState = 'reconnect'; setLink();
+        send({ type: 'hello', ts: Date.now() });
+        lastSyncSent = 0; requestSync();
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          keepScreenOn(); restoreTitle();
+          send({ type: 'hello', ts: Date.now() });
+          requestSync();
+        }
+      });
+      // Salida desde bfcache (botón "atrás"): el estado JS queda vivo pero el
+      // enlace MQTT pudo morir en segundo plano; se retoma con hello + sync.
+      window.addEventListener('pageshow', (e) => {
+        if (!e.persisted) return;
+        keepScreenOn(); restoreTitle();
+        send({ type: 'hello', ts: Date.now() });
+        lastSyncSent = 0; requestSync();
+      });
+
+      // ============ PERSISTENCIA DE NOTAS DE VOZ (IndexedDB) ============
+      // Las notas se guardan en IndexedDB (más capacidad que localStorage para
+      // base64) y se restauran al recargar, así un F5 accidental no pierde el audio.
+      const NOTE_DB_NAME = 'stealth-asist-notes-v1';
+      const NOTE_STORE = 'notes';
+      const NOTE_CAP = 30; // se conservan las últimas N notas
+      let noteDb = null, noteDbBroken = false;
+
+      function openNoteDb() {
+        if (noteDb || noteDbBroken) return Promise.resolve(noteDb);
+        return new Promise(resolve => {
+          try {
+            const req = indexedDB.open(NOTE_DB_NAME, 1);
+            req.onupgradeneeded = () => {
+              const db = req.result;
+              if (!db.objectStoreNames.contains(NOTE_STORE)) db.createObjectStore(NOTE_STORE, { keyPath: 'id' });
+            };
+            req.onsuccess = () => { noteDb = req.result; resolve(noteDb); };
+            req.onerror = () => { noteDbBroken = true; resolve(null); };
+          } catch (e) { noteDbBroken = true; resolve(null); }
+        });
+      }
+
+      async function notePut(note) {
+        const db = await openNoteDb(); if (!db || !note || !note.id) return;
+        try { db.transaction(NOTE_STORE, 'readwrite').objectStore(NOTE_STORE).put(note); } catch (e) {}
+      }
+      async function noteDelete(id) {
+        const db = await openNoteDb(); if (!db || !id) return;
+        try { db.transaction(NOTE_STORE, 'readwrite').objectStore(NOTE_STORE).delete(id); } catch (e) {}
+      }
+      async function noteGet(id) {
+        const db = await openNoteDb(); if (!db || !id) return null;
+        return new Promise(resolve => {
+          try {
+            const req = db.transaction(NOTE_STORE, 'readonly').objectStore(NOTE_STORE).get(id);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+          } catch (e) { resolve(null); }
+        });
+      }
+      async function noteAll() {
+        const db = await openNoteDb(); if (!db) return [];
+        return new Promise(resolve => {
+          try {
+            const req = db.transaction(NOTE_STORE, 'readonly').objectStore(NOTE_STORE).getAll();
+            req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+            req.onerror = () => resolve([]);
+          } catch (e) { resolve([]); }
+        });
+      }
+      async function noteTrim() {
+        const all = await noteAll();
+        if (all.length <= NOTE_CAP) return;
+        all.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        for (let i = 0; i < all.length - NOTE_CAP; i++) noteDelete(all[i].id);
+      }
+
+      function handleAudio(data) {
+        if (!data.audioBase64) return;
+        // ACK: le confirmo a Mago que este audio llegó (él puede descartarlo del buffer)
+        send({ type: 'audio_ack', ackId: data.id, ts: Date.now() });
+        // Dedupe: el mismo audio llega por BroadcastChannel y por MQTT
+        const noteId = data.id || ('audio_' + data.ts);
+        if (!audioIds.remember(noteId)) return;
+
+        audioCounter++;
+        audioCount = audioCounter;
+        const note = { id: noteId, num: audioCounter, ts: Date.now(), audioBase64: data.audioBase64, color: 'color-default', title: '' };
+        notePut(note); noteTrim();
+        renderAudioCard(note, { fresh: true });
+      }
+
+      // Renderiza una nota (nueva o restaurada). `fresh` = recién recibida de Mago.
+      function renderAudioCard(note, opts) {
+        const fresh = !!(opts && opts.fresh);
+        const num = note.num || 0;
+        const numFormatted = num < 10 ? '0' + num : num;
+        const timestampStr = new Date(note.ts || Date.now()).toLocaleTimeString();
+        const marker = `[PREGUNTA ${numFormatted} - ${timestampStr}]`;
+
+        const card = document.createElement('div');
+        card.className = 'audio-card ' + (note.color || 'color-default');
+        card.dataset.noteId = note.id;
+        card.innerHTML = `
+          <div class="audio-card-header">
+            <input class="title-input" />
+            <span style="display:flex; align-items:center; gap:6px;">
+              <span style="font-size:10px; opacity:0.6;">${timestampStr}</span>
+              <button type="button" class="btn-del-card" title="Eliminar nota">✕</button>
+            </span>
+          </div>
+          <audio controls preload="metadata"></audio>
+          <button type="button" class="btn-transcribe">🎙️ Transcribir</button>
+          <div class="transcript pending">⏸ Tocá "Transcribir" para pasar a texto</div>
+        `;
+        card.querySelector('.title-input').value = note.title || ('Pregunta ' + numFormatted);
+        card.querySelector('audio').src = note.audioBase64;
+        const tEl = card.querySelector('.transcript');
+        const btnT = card.querySelector('.btn-transcribe');
+        const titleInput = card.querySelector('.title-input');
+
+        titleInput.addEventListener('change', () => {
+          noteGet(note.id).then(existing => { if (existing) notePut({ ...existing, title: titleInput.value }); });
+        });
+
+        card.querySelector('.btn-del-card').onclick = (ev) => {
+          ev.stopPropagation();
+          noteDelete(note.id);
+          card.remove();
+          if (!audioLogContainer.querySelector('.audio-card')) {
+            audioLogContainer.innerHTML = '<div class="audio-card"><i>Esperando notas de voz...</i></div>';
+          }
+          setStatus('🗑️ Nota eliminada', 1500);
+        };
+
+        card.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          targetAudioCard = card;
+          contextMenu.style.left = Math.max(4, Math.min(e.clientX, innerWidth - 190)) + 'px';
+          contextMenu.style.top = Math.max(4, Math.min(e.clientY, innerHeight - 160)) + 'px';
+          contextMenu.style.display = 'flex';
+        });
+
+        if (audioLogContainer.querySelector('i')) audioLogContainer.innerHTML = '';
+        // Las nuevas van arriba; las restauradas se insertan arriba de ellas mismas
+        // en orden cronológico inverso (la más vieja queda al fondo).
+        if (fresh) audioLogContainer.prepend(card);
+        else audioLogContainer.appendChild(card);
+
+        // Avisa con insignia/vibración/tono/título solo si es una nota nueva en vivo
+        if (fresh) {
+          if (!tabContentAudio.classList.contains('active')) {
+            unseenAudio++; updateBadge();
+            if (navigator.vibrate) navigator.vibrate(60);
+          }
+          beep();
+          flashTitle(`🎙️ ${numFormatted} · Asistente`);
+          setStatus('🎙️ Audio ' + numFormatted + ' recibido ✅', 2000);
+        }
+
+        // Transcripción manual (estilo WhatsApp): evita que Whisper bloquee la interfaz
+        btnT.onclick = () => {
+          if (btnT.disabled) return;
+          btnT.disabled = true;
+          btnT.textContent = '⏳ Transcribiendo…';
+          upsertTranscription(marker, PENDING_TXT);
+          setTranscriptUi(tEl, PENDING_TXT, 'pending');
+          setStatus('🧠 Transcribiendo audio…');
+          transcribe(note.audioBase64)
+            .then(text => {
+              const finalTxt = text || '(sin voz detectada)';
+              upsertTranscription(marker, finalTxt);
+              setTranscriptUi(tEl, finalTxt, null);
+              btnT.textContent = '✅ Transcrito';
+              setStatus('✅ Transcrito', 1500);
+            })
+            .catch(err => {
+              console.error('Transcripción falló:', err);
+              upsertTranscription(marker, FAILED_TXT);
+              setTranscriptUi(tEl, FAILED_TXT, 'failed');
+              btnT.textContent = '🔄 Reintentar';
+              btnT.disabled = false;
+              setStatus('⚠️ Transcripción fallida', 4000);
+            });
+        };
+
+        // Auto-transcripción opcional (solo notas nuevas en vivo; las restauradas
+        // quedan pendientes para revisión manual)
+        if (fresh && chkAuto.checked) setTimeout(() => { try { btnT.click(); } catch (e) {} }, 300);
+      }
+
+      // Restaura las notas guardadas al abrir la página
+      noteAll().then(notes => {
+        if (!Array.isArray(notes) || notes.length === 0) return;
+        notes.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        for (const n of notes) {
+          audioCounter = Math.max(audioCounter, n.num || 0);
+          // Marca el ID como visto: si Mago reenvía el audio en un resync
+          // (su buffer conserva los últimos 4), no se duplica la tarjeta.
+          audioIds.remember(n.id);
+          try { renderAudioCard(n, { fresh: false }); } catch (e) {}
+        }
+        audioCount = audioCounter;
+        updateLastAct();
+      });
+
+      function handleStroke(data) {
+        if (!data.id || strokeIds.has(data.id)) return;
+        if (data.isCommand) { strokeCount++; addGlyph(data.points || [], data.id, data.isCommand); return; }
+        if (!data.points || data.points.length < 2) return;
+        strokeCount++;
+        addGlyph(data.points, data.id, null);
+      }
 
       function handle(data) {
         if (!data) return;
         if (data.from === CLIENT_ID) return;
 
-        if (data.type === 'audio_blob') {
-          audioCounter++;
-          const numFormatted = audioCounter < 10 ? '0' + audioCounter : audioCounter;
-          const timestampStr = new Date().toLocaleTimeString();
-          
-          const marker = `[PREGUNTA ${numFormatted} - ${timestampStr}]`;
+        lastMsgAt = Date.now();
+        updateLastAct();
 
-          const card = document.createElement('div');
-          card.className = 'audio-card color-default';
-          card.innerHTML = `
-            <div class="audio-card-header">
-              <input class="title-input" value="Pregunta ${numFormatted}" />
-              <span style="font-size:10px; opacity:0.6;">${timestampStr}</span>
-            </div>
-            <audio controls src="${data.audioBase64}"></audio>
-            <button type="button" class="btn-transcribe">🎙️ Transcribir</button>
-            <div class="transcript pending">⏸ Tocá "Transcribir" para pasar a texto</div>
-          `;
-          const tEl = card.querySelector('.transcript');
-          const btnT = card.querySelector('.btn-transcribe');
-
-          card.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            targetAudioCard = card;
-            contextMenu.style.left = e.clientX + 'px';
-            contextMenu.style.top = e.clientY + 'px';
-            contextMenu.style.display = 'flex';
-          });
-          
-          if (audioLogContainer.querySelector('i')) {
-            audioLogContainer.innerHTML = '';
-          }
-          audioLogContainer.prepend(card);
-
-          statusEl.textContent = '🎙️ Audio recibido ✅';
-          setTimeout(() => { if (statusEl.textContent.startsWith('🎙️')) statusEl.textContent = '🟢 Listo'; }, 2000);
-
-          // Transcripción manual (estilo WhatsApp): evita que Whisper bloquee la interfaz
-          btnT.onclick = () => {
-            if (btnT.disabled) return;
-            btnT.disabled = true;
-            btnT.textContent = '⏳ Transcribiendo…';
-            upsertTranscription(marker, PENDING_TXT);
-            setTranscriptUi(tEl, PENDING_TXT, 'pending');
-            statusEl.textContent = '🧠 Transcribiendo audio…';
-            transcribe(data.audioBase64)
-              .then(text => {
-                const finalTxt = text || '(sin voz detectada)';
-                upsertTranscription(marker, finalTxt);
-                setTranscriptUi(tEl, finalTxt, null);
-                btnT.textContent = '✅ Transcrito';
-                statusEl.textContent = '🟢 Listo';
-              })
-              .catch(err => {
-                console.error('Transcripción falló:', err);
-                upsertTranscription(marker, FAILED_TXT);
-                setTranscriptUi(tEl, FAILED_TXT, 'failed');
-                btnT.textContent = '🔄 Reintentar';
-                btnT.disabled = false;
-                statusEl.textContent = '⚠️ Transcripción fallida';
-              });
-          };
+        if (data.type === 'hello') {
+          setStatus('✏️ Mago activo', 2500);
+          // Mago (re)conectó: pido todo de nuevo por si perdimos trazas mientras tanto
+          lastSyncSent = 0; requestSync();
           return;
         }
-
-        if (data.type === 'stroke') {
-          if (!data.id || seenIds.has(data.id)) return;
-          addGlyph(data.points, data.id, data.isCommand);
+        if (data.type === 'ping') { send({ type: 'pong', ts: Date.now() }); return; }
+        if (data.type === 'pong') { return; } // presencia: ya actualizada arriba
+        if (data.type === 'audio_ack') { return; } // confirmación saliente, nada que hacer
+        if (data.type === 'audio_blob') { handleAudio(data); return; }
+        if (data.type === 'stroke') { handleStroke(data); return; }
+        // Mago reenvía trazas en lotes al resincronizar (dedupe por id lo filtra)
+        if (data.type === 'stroke_batch' && Array.isArray(data.strokes)) {
+          for (const s of data.strokes) { try { handleStroke(s); } catch (e) {} }
+          return;
         }
       }
 
-      try { bc = new BroadcastChannel(BC_NAME); bc.onmessage = e => handle(e.data); } catch{}
+      try {
+        bc = new BroadcastChannel(BC_NAME);
+        bc.onmessage = e => { try { handle(e.data); } catch (err) { console.warn('[asistente] mensaje local inválido', err); } };
+      } catch (e) { bc = null; }
+
+      // Handshake inicial por cualquier transporte disponible: aunque MQTT tarde
+      // o falle, el hello + sync por BroadcastChannel ponen a Mago al día al
+      // instante en el mismo equipo. Si no hay nadie escuchando, el hello
+      // periódico del ping reintenta hasta que Mago conteste.
+      send({ type: 'hello', ts: Date.now() });
+      setTimeout(() => { lastSyncSent = 0; requestSync(); }, 800);
 
       function connectMqtt() {
+        if (typeof mqtt === 'undefined' || !mqtt || typeof mqtt.connect !== 'function') {
+          linkState = bc ? 'local' : 'down'; setLink(); return;
+        }
         try {
           mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', { clientId: 'a_'+CLIENT_ID, clean:true, connectTimeout:3000, reconnectPeriod:4000 });
-          mqttClient.on('connect', () => { mqttClient.subscribe(TOPIC); statusEl.textContent = '🟢 Listo'; });
-          mqttClient.on('message', (t, msg) => { try { handle(JSON.parse(msg.toString())); } catch{} });
-        } catch{}
+          mqttClient.on('connect', () => {
+            connectedMqtt = true;
+            try { mqttClient.subscribe(TOPIC); } catch (e) {}
+            linkState = 'mqtt'; setLink();
+            send({ type: 'hello', ts: Date.now() });
+            lastSyncSent = 0; requestSync();
+          });
+          mqttClient.on('message', (t, msg) => {
+            const run = () => { try { handle(JSON.parse(msg.toString())); } catch (err) { console.warn('[asistente] mensaje MQTT inválido', err); } };
+            // En el mismo equipo, BroadcastChannel llega antes: se le da prioridad
+            // para evitar duplicados visibles y mantener el orden de llegada.
+            if (document.visibilityState === 'visible') setTimeout(run, 120);
+            else run();
+          });
+          mqttClient.on('offline', () => { connectedMqtt = false; linkState = 'reconnect'; setLink(); });
+          mqttClient.on('reconnect', () => { connectedMqtt = false; linkState = 'reconnect'; setLink(); });
+          mqttClient.on('close', () => { connectedMqtt = false; if (linkState === 'mqtt') { linkState = 'reconnect'; setLink(); } });
+          mqttClient.on('error', () => { if (!connectedMqtt) { linkState = 'reconnect'; setLink(); } });
+        } catch (e) { linkState = bc ? 'local' : 'down'; setLink(); }
       }
       connectMqtt();
 
-      btnClear.onclick = () => { glyphs=[]; seenIds.clear(); recognizedText.value=''; selectedGlyph=null; correctBar.classList.remove('show'); relayout(); };
-      btnCopy.onclick = async () => { await navigator.clipboard.writeText(recognizedText.value); statusEl.textContent='Copiado ✅'; setTimeout(()=>statusEl.textContent='🟢 Listo', 1500); };
+      // Red de seguridad: resincronización suave periódica. Si algún stroke_batch
+      // se perdió ( MQTT drop, pestaña en background), se recupera solo.
+      // requestSync ya tiene throttle de 3s y Mago dedupea por ID: es seguro.
+      setInterval(() => { if (magoAlive) requestSync(); }, 60000);
+
+      // ============ DESHACER ÚLTIMO GLIFO ============
+      function undoLast() {
+        if (glyphs.length === 0) return;
+        glyphs.pop();
+        selectedGlyph = null;
+        correctBar.classList.remove('show');
+        rebuildTextFromGlyphs();
+        relayout();
+        setStatus('↩ Deshecho', 1200);
+      }
+      btnUndo.onclick = undoLast;
+
+      document.addEventListener('keydown', (e) => {
+        const tag = (e.target && e.target.tagName) || '';
+        if (tag === 'TEXTAREA' || tag === 'INPUT') return; // respetar deshacer nativo
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoLast(); }
+      });
+
+      // Borrar todo a doble toque: evita perder el examen de un toque accidental
+      let clearArmed = false, clearArmTimer = null;
+      btnClear.onclick = () => {
+        if (!clearArmed) {
+          clearArmed = true;
+          btnClear.textContent = '⚠️';
+          setStatus('Tocá 🗑️ otra vez para borrar todo', 2500);
+          clearTimeout(clearArmTimer);
+          clearArmTimer = setTimeout(() => { clearArmed = false; btnClear.textContent = '🗑️'; }, 2500);
+          return;
+        }
+        clearArmed = false; btnClear.textContent = '🗑️';
+        clearTimeout(clearArmTimer);
+        clearAll();
+        setStatus('🗑️ Borrado', 1500);
+      };
+      btnCopy.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(recognizedText.value);
+          setStatus('Copiado ✅', 1500);
+        } catch (e) {
+          recognizedText.focus(); recognizedText.select();
+          setStatus('⚠️ Seleccioná y copiá manualmente', 2500);
+        }
+      };
     })();
   </script>
 </body>

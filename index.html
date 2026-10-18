@@ -73,6 +73,17 @@
       let noiseFloor = 0.004, levelSmooth = 0;
       let current = null; // grabación en curso
 
+      // ============ BUFFER DE REENVÍO (por si el asistente se reconecta o pierde mensajes) ============
+      const STROKE_BUF_MAX = 400;
+      const AUDIO_BUF_MAX = 4;
+      const strokeBuffer = [];      // últimas trazas/comandos enviados
+      const audioBuffer = new Map(); // id -> payload de audio sin confirmar (audio_ack)
+
+      function bufferStroke(payload) {
+        strokeBuffer.push(payload);
+        if (strokeBuffer.length > STROKE_BUF_MAX) strokeBuffer.shift();
+      }
+
       async function initAudioRecorder() {
         if (audioStream) return;
         try {
@@ -186,15 +197,21 @@
            const audioBlob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
            if (audioBlob.size < 1500) { teardownAudioResources(); return; } // grabación vacía o demasiado corta
            const reader = new FileReader();
-           reader.onloadend = () => {
-             try {
-               send({
-                 type: 'audio_blob',
-                 id: 'audio_' + Date.now(),
-                 from: CLIENT_ID,
-                 audioBase64: reader.result,
-                 ts: Date.now()
-               });
+            reader.onloadend = () => {
+              try {
+                const payload = {
+                  type: 'audio_blob',
+                  id: 'audio_' + Date.now(),
+                  from: CLIENT_ID,
+                  audioBase64: reader.result,
+                  ts: Date.now()
+                };
+                // Queda en el buffer por si el asistente no lo recibe a la primera
+                audioBuffer.set(payload.id, payload);
+                while (audioBuffer.size > AUDIO_BUF_MAX) {
+                  audioBuffer.delete(audioBuffer.keys().next().value);
+                }
+                send(payload);
                // Vibración corta al enviar (si se reinicia, ya vibra el inicio de la nueva)
                if (!session.restarting && navigator.vibrate) navigator.vibrate(100);
              } finally {
@@ -266,7 +283,42 @@
 
       function send(payload) {
         try { if (bc) bc.postMessage(payload); } catch{}
-        try { if (mqttClient && connectedMqtt) mqttClient.publish(TOPIC, JSON.stringify(payload), {qos:0}); } catch(e) {}
+        try { if (mqttClient && connectedMqtt) mqttClient.publish(TOPIC, JSON.stringify(payload), {qos: payload.type === 'audio_blob' ? 1 : 0}); } catch(e) {}
+      }
+
+      // Igual que send pero además deja la traza en el buffer de reenvío
+      function sendStroke(payload) {
+        bufferStroke(payload);
+        send(payload);
+      }
+
+      // ============ MENSAJES DEL ASISTENTE (presencia + resincronización) ============
+      function handleAsistenteMsg(data) {
+        if (!data || data.from === CLIENT_ID) return;
+        if (data.type === 'ping') { send({ type: 'pong', from: CLIENT_ID, ts: Date.now() }); return; }
+        if (data.type === 'hello') { send({ type: 'hello', from: CLIENT_ID, ts: Date.now() }); resyncTo(data.from); return; }
+        if (data.type === 'sync_request') { resyncTo(data.from, data.haveAudio); return; }
+        if (data.type === 'audio_ack') {
+          if (data.ackId) audioBuffer.delete(data.ackId); // el asistente lo recibió: no hace falta reenviarlo
+          return;
+        }
+      }
+
+      // Reenvía trazas por lotes y los audios que el asistente no tenía.
+      // El asistente descarta ids repetidos, así que es seguro reenviar de más.
+      let lastResync = 0;
+      function resyncTo(_target, haveAudio) {
+        const now = Date.now();
+        if (now - lastResync < 2000) return; // evita tormentas si llegan hellos duplicados
+        lastResync = now;
+        for (let i = 0; i < strokeBuffer.length; i += 25) {
+          send({ type: 'stroke_batch', from: CLIENT_ID, strokes: strokeBuffer.slice(i, i + 25), ts: Date.now() });
+        }
+        const have = new Set(Array.isArray(haveAudio) ? haveAudio : []);
+        for (const [id, payload] of audioBuffer) {
+          if (!have.has(id)) send(Object.assign({}, payload));
+        }
+        if (navigator.vibrate) navigator.vibrate(30);
       }
 
       function start(e) {
@@ -282,7 +334,7 @@
         longPressTimer = setTimeout(() => {
           if (drawing && !hasMoved && activePointers.size === 1) {
             drawing = false; currentPoints = []; redraw();
-            send({ type: 'stroke', id: 'cmd_option_' + Date.now(), from: CLIENT_ID, isCommand: 'option', points: [] });
+            sendStroke({ type: 'stroke', id: 'cmd_option_' + Date.now(), from: CLIENT_ID, isCommand: 'option', points: [] });
             if (navigator.vibrate) navigator.vibrate(70);
           }
         }, 750);
@@ -312,16 +364,16 @@
 
           if (tapTimestamps.length === 3) {
             tapTimestamps = [];
-            send({ type: 'stroke', id: 'cmd_question_' + Date.now(), from: CLIENT_ID, isCommand: 'question', points: [] });
+            sendStroke({ type: 'stroke', id: 'cmd_question_' + Date.now(), from: CLIENT_ID, isCommand: 'question', points: [] });
             triggerAudioCapture(); // Clic/Reinicio de audio
           } else if (tapTimestamps.length === 2) {
-            send({ type: 'stroke', id: 'cmd_newline_' + Date.now(), from: CLIENT_ID, isCommand: 'newline', points: [] });
+            sendStroke({ type: 'stroke', id: 'cmd_newline_' + Date.now(), from: CLIENT_ID, isCommand: 'newline', points: [] });
             if (navigator.vibrate) navigator.vibrate(45);
           } else if (tapTimestamps.length === 1) {
             setTimeout(() => {
               if (tapTimestamps.length === 1) {
                 tapTimestamps = [];
-                send({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
+                sendStroke({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
                 if (navigator.vibrate) navigator.vibrate(20);
               }
             }, 200);
@@ -329,7 +381,7 @@
         }
 
         if (hasMoved && currentPoints.length >= 2 && activePointers.size === 0) {
-          send({
+          sendStroke({
             type: 'stroke',
             id: CLIENT_ID + '-' + Date.now() + '-' + Math.random().toString(36).slice(2,6),
             from: CLIENT_ID, points: currentPoints, ts: Date.now()
@@ -337,7 +389,7 @@
 
           if (pauseTimer) clearTimeout(pauseTimer);
           pauseTimer = setTimeout(() => {
-            send({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
+            sendStroke({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
           }, 700);
         }
         currentPoints = []; redraw();
@@ -354,14 +406,26 @@
         redraw();
       };
 
-      try { bc = new BroadcastChannel(BC_NAME); } catch{}
+      try {
+        bc = new BroadcastChannel(BC_NAME);
+        bc.onmessage = e => { try { handleAsistenteMsg(e.data); } catch (err) {} };
+      } catch{}
 
       function connect() {
         try {
           mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
             clientId: 'm_'+CLIENT_ID, clean:true, connectTimeout:8000, reconnectPeriod:4000
           });
-          mqttClient.on('connect', () => { connectedMqtt=true; mqttClient.subscribe(TOPIC); statusEl.textContent = '•'; });
+          mqttClient.on('connect', () => {
+            connectedMqtt=true; mqttClient.subscribe(TOPIC); statusEl.textContent = '•';
+            send({ type: 'hello', from: CLIENT_ID, ts: Date.now() });
+          });
+          mqttClient.on('message', (t, msg) => {
+            // En el mismo equipo BroadcastChannel ya lo trajo: priorizarlo evita duplicados
+            const run = () => { try { handleAsistenteMsg(JSON.parse(msg.toString())); } catch (err) {} };
+            if (document.visibilityState === 'visible') setTimeout(run, 120);
+            else run();
+          });
           mqttClient.on('error', () => { connectedMqtt=false; statusEl.textContent = '…'; });
         } catch(e) {}
       }
