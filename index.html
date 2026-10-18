@@ -69,11 +69,12 @@
       const VAD_TICK_MS     = 80;
 
       let audioStream = null;
-      let audioCtx = null, analyser = null, vadBuf = null;
+      let audioCtx = null, analyser = null, vadBuf = null, vadSrc = null;
       let noiseFloor = 0.004, levelSmooth = 0;
       let current = null; // grabación en curso
 
       async function initAudioRecorder() {
+        if (audioStream) return;
         try {
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
           audioStream = await navigator.mediaDevices.getUserMedia({
@@ -89,13 +90,25 @@
           const AC = window.AudioContext || window.webkitAudioContext;
           if (!AC) return;
           audioCtx = new AC();
-          const src = audioCtx.createMediaStreamSource(audioStream);
+          vadSrc = audioCtx.createMediaStreamSource(audioStream);
           analyser = audioCtx.createAnalyser();
           analyser.fftSize = 2048;
           analyser.smoothingTimeConstant = 0;
-          src.connect(analyser); // no se conecta a destination: sin eco ni sonido
+          vadSrc.connect(analyser); // no se conecta a destination: sin eco ni sonido
           vadBuf = new Float32Array(analyser.fftSize);
-        } catch (e) { analyser = null; }
+        } catch (e) { analyser = null; vadSrc = null; }
+      }
+
+      // Libera AudioContext, AnalyserNode y MediaStream al terminar la grabación (evita fugas)
+      function teardownAudioResources() {
+        if (current) return; // una nueva grabación ya arrancó: no tocar sus recursos
+        try { if (vadSrc) vadSrc.disconnect(); } catch (e) {}
+        vadSrc = null; analyser = null; vadBuf = null;
+        if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
+        if (audioStream) {
+          audioStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+          audioStream = null;
+        }
       }
 
       function readLevel() {
@@ -107,41 +120,54 @@
         return levelSmooth;
       }
 
-      function vadTick(s) {
-        if (s.done || !analyser) return;
-        const now = performance.now();
-        const elapsed = now - s.startedAt;
-        const lvl = readLevel();
+       function vadTick(s) {
+         if (s.done) return;
+         if (!analyser || !audioCtx) {
+           finishRecording(s, false);
+           return;
+         }
+         try {
+           const now = performance.now();
+           const elapsed = now - s.startedAt;
+           const lvl = readLevel();
 
-        // Ruido de fondo: baja rápido, sube muy lento (y con tope)
-        if (lvl < noiseFloor) noiseFloor = noiseFloor * 0.5 + lvl * 0.5;
-        else noiseFloor += (lvl - noiseFloor) * 0.0005;
-        noiseFloor = Math.min(noiseFloor, 0.012);
+           // Ruido de fondo: baja rápido, sube muy lento (y con tope)
+           if (lvl < noiseFloor) noiseFloor = noiseFloor * 0.5 + lvl * 0.5;
+           else noiseFloor += (lvl - noiseFloor) * 0.0005;
+           noiseFloor = Math.min(noiseFloor, 0.012);
 
-        const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.003));
+           const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.003));
 
-        if (elapsed < GRACE_MS) { s.silenceSince = null; return; }
+           if (elapsed < GRACE_MS) { s.silenceSince = null; return; }
 
-        if (lvl < threshold) {
-          if (s.silenceSince === null) s.silenceSince = now;
-          else if (now - s.silenceSince >= SILENCE_CUT_MS) finishRecording(s, false);
-        } else {
-          s.silenceSince = null;
-        }
-      }
+           if (lvl < threshold) {
+             if (s.silenceSince === null) s.silenceSince = now;
+             else if (now - s.silenceSince >= SILENCE_CUT_MS) finishRecording(s, false);
+           } else {
+             s.silenceSince = null;
+           }
+         } catch (e) {
+           finishRecording(s, false);
+         }
+       }
 
-      function finishRecording(session, restarting) {
-        if (!session || session.done) return;
-        session.done = true;
-        session.restarting = !!restarting;
-        clearInterval(session.vad);
-        clearTimeout(session.timer);
-        if (current === session) current = null;
-        try { if (session.rec.state !== 'inactive') session.rec.stop(); } catch (e) {}
-      }
+       function finishRecording(session, restarting) {
+         if (!session || session.done) return;
+         session.done = true;
+         session.restarting = !!restarting;
+         clearInterval(session.vad);
+         clearTimeout(session.timer);
+         if (current === session) current = null;
+         try { if (session.rec && session.rec.state !== 'inactive') session.rec.stop(); } catch (e) {}
+         // Limpieza diferida: deja que MediaRecorder entregue su chunk final antes de cerrar todo
+         setTimeout(teardownAudioResources, 0);
+         // Seguridad: fuerza limpieza si onstop nunca llega
+         setTimeout(teardownAudioResources, 2000);
+       }
 
-      function startNewRecording() {
-        if (!audioStream) { initAudioRecorder(); return; }
+      async function startNewRecording() {
+        if (!audioStream) await initAudioRecorder();
+        if (!audioStream) return;
         setupAnalyser();
         if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
 
@@ -156,36 +182,44 @@
         rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
         rec.onstop = () => {
           clearInterval(session.vad); clearTimeout(session.timer);
-          try {
-            const audioBlob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
-            if (audioBlob.size < 1500) return; // grabación vacía o demasiado corta
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              send({
-                type: 'audio_blob',
-                id: 'audio_' + Date.now(),
-                from: CLIENT_ID,
-                audioBase64: reader.result,
-                ts: Date.now()
-              });
-              // Vibración corta al enviar (si se reinicia, ya vibra el inicio de la nueva)
-              if (!session.restarting && navigator.vibrate) navigator.vibrate(100);
-            };
-            reader.readAsDataURL(audioBlob);
-          } catch (ex) {}
+         try {
+           const audioBlob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+           if (audioBlob.size < 1500) { teardownAudioResources(); return; } // grabación vacía o demasiado corta
+           const reader = new FileReader();
+           reader.onloadend = () => {
+             try {
+               send({
+                 type: 'audio_blob',
+                 id: 'audio_' + Date.now(),
+                 from: CLIENT_ID,
+                 audioBase64: reader.result,
+                 ts: Date.now()
+               });
+               // Vibración corta al enviar (si se reinicia, ya vibra el inicio de la nueva)
+               if (!session.restarting && navigator.vibrate) navigator.vibrate(100);
+             } finally {
+               teardownAudioResources();
+             }
+           };
+           reader.onerror = () => teardownAudioResources();
+           reader.readAsDataURL(audioBlob);
+         } catch (ex) { teardownAudioResources(); }
         };
 
-        try { rec.start(); } catch (e) { return; }
-        current = session;
-        if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
+         try { rec.start(); } catch (e) { teardownAudioResources(); return; }
+         current = session;
+         if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
 
-        session.timer = setTimeout(() => finishRecording(session, false), MAX_RECORD_MS);
-        if (analyser) session.vad = setInterval(() => vadTick(session), VAD_TICK_MS);
+         session.timer = setTimeout(() => finishRecording(session, false), MAX_RECORD_MS);
+         if (analyser) session.vad = setInterval(() => vadTick(session), VAD_TICK_MS);
       }
 
       // Triple toque: si graba, corta y envía el actual y arranca uno nuevo desde cero
       function triggerAudioCapture() {
-        if (!audioStream) { initAudioRecorder(); return; }
+        if (!audioStream) {
+          initAudioRecorder().then(() => { if (audioStream) startNewRecording(); });
+          return;
+        }
         if (current) {
           finishRecording(current, true);
           setTimeout(startNewRecording, 250);

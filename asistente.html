@@ -52,6 +52,13 @@
     }
     .transcript.pending { color: #aaa; font-style: italic; border-left-color: #facc15; }
     .transcript.failed { color: #fca5a5; border-left-color: #ef4444; }
+    .btn-transcribe {
+      margin-top: 6px; align-self: flex-start; background: #25d366; color: #0b141a;
+      border: none; border-radius: 999px; padding: 7px 16px; font-size: 12px; font-weight: 700;
+      cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.45); touch-action: manipulation;
+    }
+    .btn-transcribe:active { transform: scale(0.97); }
+    .btn-transcribe[disabled] { opacity: 0.5; cursor: default; }
 
     #contextMenu {
       position: fixed; display: none; z-index: 1000; background: #1a1a1a; border: 1px solid #444;
@@ -144,7 +151,7 @@
   <div id="tabContentAudio" class="tab-content">
     <div id="audioPanelContent">
       <div style="font-size: 12px; color: #aaa;">
-        Notas de voz recibidas (Clic derecho para cambiar de color):
+        Notas de voz recibidas (Clic derecho: color · Botón verde: transcribir):
       </div>
       <div id="audioLogContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
         <div class="audio-card"><i>Esperando notas de voz...</i></div>
@@ -673,17 +680,23 @@
       }
 
       const PENDING_TXT = '⏳ Transcribiendo...';
-      function applyTranscription(marker, tEl, text, failed) {
-        const finalTxt = failed ? '⚠️ No se pudo transcribir' : (text || '(sin voz detectada)');
-        const pendingBlock = marker + '\n' + PENDING_TXT;
-        if (recognizedText.value.includes(pendingBlock)) {
-          recognizedText.value = recognizedText.value.replace(pendingBlock, () => marker + '\n' + finalTxt);
+      const FAILED_TXT = '⚠️ No se pudo transcribir';
+
+      function setTranscriptUi(tEl, txt, state) {
+        tEl.textContent = txt;
+        tEl.classList.remove('pending', 'failed');
+        if (state) tEl.classList.add(state);
+      }
+
+      // Inserta o reemplaza el bloque del marcador en el texto global (sin duplicar en reintentos)
+      function upsertTranscription(marker, txt) {
+        const block = marker + '\n' + txt;
+        const idx = recognizedText.value.lastIndexOf(marker);
+        if (idx === -1) {
+          recognizedText.value += '\n\n' + block;
         } else {
-          recognizedText.value += '\n\n' + marker + '\n' + finalTxt;
+          recognizedText.value = recognizedText.value.slice(0, idx) + block;
         }
-        tEl.textContent = finalTxt;
-        tEl.classList.remove('pending');
-        if (failed) tEl.classList.add('failed');
       }
 
       loadAsr().catch(() => {}); // precarga el modelo al abrir la página
@@ -698,8 +711,6 @@
           const timestampStr = new Date().toLocaleTimeString();
           
           const marker = `[PREGUNTA ${numFormatted} - ${timestampStr}]`;
-          recognizedText.value += `\n\n${marker}\n${PENDING_TXT}`;
-          recognizedText.scrollTop = recognizedText.scrollHeight;
 
           const card = document.createElement('div');
           card.className = 'audio-card color-default';
@@ -709,9 +720,11 @@
               <span style="font-size:10px; opacity:0.6;">${timestampStr}</span>
             </div>
             <audio controls src="${data.audioBase64}"></audio>
-            <div class="transcript pending">${PENDING_TXT}</div>
+            <button type="button" class="btn-transcribe">🎙️ Transcribir</button>
+            <div class="transcript pending">⏸ Tocá "Transcribir" para pasar a texto</div>
           `;
           const tEl = card.querySelector('.transcript');
+          const btnT = card.querySelector('.btn-transcribe');
 
           card.addEventListener('contextmenu', (e) => {
             e.preventDefault();
@@ -729,9 +742,31 @@
           statusEl.textContent = '🎙️ Audio recibido ✅';
           setTimeout(() => { if (statusEl.textContent.startsWith('🎙️')) statusEl.textContent = '🟢 Listo'; }, 2000);
 
-          transcribe(data.audioBase64)
-            .then(text => applyTranscription(marker, tEl, text, false))
-            .catch(err => { console.error('Transcripción falló:', err); applyTranscription(marker, tEl, '', true); });
+          // Transcripción manual (estilo WhatsApp): evita que Whisper bloquee la interfaz
+          btnT.onclick = () => {
+            if (btnT.disabled) return;
+            btnT.disabled = true;
+            btnT.textContent = '⏳ Transcribiendo…';
+            upsertTranscription(marker, PENDING_TXT);
+            setTranscriptUi(tEl, PENDING_TXT, 'pending');
+            statusEl.textContent = '🧠 Transcribiendo audio…';
+            transcribe(data.audioBase64)
+              .then(text => {
+                const finalTxt = text || '(sin voz detectada)';
+                upsertTranscription(marker, finalTxt);
+                setTranscriptUi(tEl, finalTxt, null);
+                btnT.textContent = '✅ Transcrito';
+                statusEl.textContent = '🟢 Listo';
+              })
+              .catch(err => {
+                console.error('Transcripción falló:', err);
+                upsertTranscription(marker, FAILED_TXT);
+                setTranscriptUi(tEl, FAILED_TXT, 'failed');
+                btnT.textContent = '🔄 Reintentar';
+                btnT.disabled = false;
+                statusEl.textContent = '⚠️ Transcripción fallida';
+              });
+          };
           return;
         }
 
