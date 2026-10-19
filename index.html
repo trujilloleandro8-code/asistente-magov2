@@ -61,12 +61,15 @@
       // Ajustes (tocá estos valores si corta muy pronto o tarde)
       const MAX_RECORD_MS   = 60000; // duración máxima por audio
       const GRACE_MS        = 4500;  // margen inicial: no se evalúa silencio antes de esto
-      const SILENCE_CUT_MS  = 2300;  // silencio continuo que dispara el corte automático
+      const SILENCE_CUT_MS  = 3500;  // silencio continuo que dispara el corte automático
       const MIN_THRESHOLD   = 0.008; // umbral mínimo de volumen (RMS 0..1)
       const MAX_THRESHOLD   = 0.030; // umbral máximo (para no confundir susurros con silencio)
       const NOISE_FACTOR    = 2.5;   // umbral = ruido de fondo x este factor
       const AUDIO_BITRATE   = 24000; // bits/s: mantiene el audio chico para MQTT (60s ≈ 180 KB)
       const VAD_TICK_MS     = 80;
+      const VOICE_CONFIRM_MS = 240;  // tiempo de voz ACUMULADO (no seguido) para dar por hecho que hablaste
+      const VOICE_IGNORE_MS  = 600;  // ignora el arranque: toques en pantalla y vibración suenan en el micrófono
+      const NO_VOICE_CUT_MS  = 12000; // si en este tiempo no se detectó voz, corta igual
 
       let audioStream = null;
       let audioCtx = null, analyser = null, vadBuf = null, vadSrc = null;
@@ -140,6 +143,8 @@
          try {
            const now = performance.now();
            const elapsed = now - s.startedAt;
+           const dt = s._lastTick ? Math.min(now - s._lastTick, 250) : VAD_TICK_MS;
+           s._lastTick = now;
            const lvl = readLevel();
 
            // Ruido de fondo: baja rápido, sube muy lento (y con tope)
@@ -147,17 +152,44 @@
            else noiseFloor += (lvl - noiseFloor) * 0.0005;
            noiseFloor = Math.min(noiseFloor, 0.012);
 
-            const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.003));
-            s.lastThreshold = threshold;
-            if (lvl > s.peakLevel) s.peakLevel = lvl;
+           const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.003));
+           s.lastThreshold = threshold;
+           if (lvl > s.peakLevel) s.peakLevel = lvl;
 
-            if (elapsed < GRACE_MS) { s.silenceSince = null; return; }
+           // Gráfico: promedio del nivel de cada ventana de 500 ms
+           s._winSum += lvl; s._winN++;
+           if (now - s._lastLevelTs >= 500) {
+             s.levels.push(s._winSum / Math.max(1, s._winN));
+             if (s.levels.length > 120) s.levels.shift();
+             s._winSum = 0; s._winN = 0; s._lastLevelTs = now;
+           }
 
-            if (lvl < threshold) {
-              if (s.silenceSince === null) s.silenceSince = now;
-              else if (now - s.silenceSince >= SILENCE_CUT_MS) { s.stopReason = 'silence'; finishRecording(s, false); }
-           } else {
+           const voiced = lvl >= threshold;
+
+           // Voz ACUMULADA: corre en cada tick (también durante el margen inicial) y nunca se reinicia,
+           // así un susurro que sube y baja igual cuenta. Se ignora el arranque (toques/vibración).
+           if (voiced && elapsed >= VOICE_IGNORE_MS) {
+             s.voiceMs += dt;
+             if (s.voiceMs >= VOICE_CONFIRM_MS) s.hadVoice = true;
+           }
+
+           // Margen inicial: todavía no se evalúa ningún corte
+           if (elapsed < GRACE_MS) { s.silenceSince = null; return; }
+
+           // Si nunca se detectó voz, espera hasta NO_VOICE_CUT_MS y corta
+           if (!s.hadVoice) {
+             if (elapsed >= NO_VOICE_CUT_MS) { s.stopReason = 'silence'; finishRecording(s, false); }
+             return;
+           }
+
+           // Ya hubo voz: corta tras SILENCE_CUT_MS de silencio continuo
+           if (voiced) {
              s.silenceSince = null;
+           } else if (s.silenceSince === null) {
+             s.silenceSince = now;
+           } else if (now - s.silenceSince >= SILENCE_CUT_MS) {
+             s.stopReason = 'silence';
+             finishRecording(s, false);
            }
          } catch (e) {
            finishRecording(s, false);
@@ -168,6 +200,7 @@
          if (!session || session.done) return;
          session.done = true;
          session.restarting = !!restarting;
+         session.endedAt = performance.now();
          clearInterval(session.vad);
          clearTimeout(session.timer);
          if (current === session) current = null;
@@ -189,7 +222,7 @@
         catch (e) { try { rec = new MediaRecorder(audioStream); } catch (e2) { return; } }
 
         const chunks = [];
-        const session = { rec, startedAt: performance.now(), silenceSince: null, vad: null, timer: null, done: false, restarting: false, stopReason: null, peakLevel: 0, lastThreshold: 0 };
+        const session = { rec, startedAt: performance.now(), silenceSince: null, vad: null, timer: null, done: false, restarting: false, stopReason: null, peakLevel: 0, lastThreshold: 0, levels: [], hadVoice: false, voiceMs: 0, _lastTick: 0, _winSum: 0, _winN: 0, _lastLevelTs: performance.now(), endedAt: 0 };
         levelSmooth = 0;
 
         rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
@@ -207,11 +240,14 @@
                   from: CLIENT_ID,
                   audioBase64: reader.result,
                   ts: Date.now(),
-                  durationMs: Math.round(performance.now() - session.startedAt),
+                  durationMs: Math.round((session.endedAt || performance.now()) - session.startedAt),
                   stopReason: session.stopReason || 'other'
                 };
                 if (session.peakLevel > 0) payload.peakLevel = Math.round(session.peakLevel * 10000) / 10000;
                 if (session.lastThreshold > 0) payload.threshold = Math.round(session.lastThreshold * 10000) / 10000;
+                if (Array.isArray(session.levels) && session.levels.length > 0) {
+                  payload.levels = session.levels.map(v => Math.round(v * 10000) / 10000);
+                }
                 // Queda en el buffer por si el asistente no lo recibe a la primera
                 audioBuffer.set(payload.id, payload);
                 while (audioBuffer.size > AUDIO_BUF_MAX) {
@@ -220,13 +256,13 @@
                 send(payload);
                // Vibración corta al enviar (si se reinicia, ya vibra el inicio de la nueva)
                if (!session.restarting && navigator.vibrate) navigator.vibrate(100);
-             } finally {
-               teardownAudioResources();
-             }
-           };
-           reader.onerror = () => teardownAudioResources();
-           reader.readAsDataURL(audioBlob);
-         } catch (ex) { teardownAudioResources(); }
+              } finally {
+                teardownAudioResources();
+              }
+            };
+            reader.onerror = () => teardownAudioResources();
+            reader.readAsDataURL(audioBlob);
+          } catch (ex) { teardownAudioResources(); }
         };
 
          try { rec.start(); } catch (e) { teardownAudioResources(); return; }

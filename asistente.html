@@ -196,6 +196,7 @@
         <label style="display:flex; gap:5px; align-items:center; font-size:12px; color:#ccc; cursor:pointer; font-weight:400; opacity:1;">
           <input type="checkbox" id="chkAlerts"> 🔔 Alertas sonoras
         </label>
+        <button type="button" class="btn" id="btnOwnRec">⏺ Grabar</button>
       </div>
       <div class="set-row">
         <label style="display:flex; gap:5px; align-items:center; font-size:12px; color:#ccc; font-weight:400; opacity:1;">
@@ -1237,6 +1238,7 @@
         if (data.stopReason) note.stopReason = data.stopReason;
         if (data.peakLevel != null) note.peakLevel = data.peakLevel;
         if (data.threshold != null) note.threshold = data.threshold;
+        if (Array.isArray(data.levels)) note.levels = data.levels.map(v => Math.round(v * 10000) / 10000);
         notePut(note); noteTrim();
         renderAudioCard(note, { fresh: true });
       }
@@ -1244,6 +1246,7 @@
       // Renderiza una nota (nueva o restaurada). `fresh` = recién recibida de Mago.
       function renderAudioCard(note, opts) {
         const fresh = !!(opts && opts.fresh);
+        const own = !!(note.own || (opts && opts.own));
         const num = note.num || 0;
         const numFormatted = num < 10 ? '0' + num : num;
         const timestampStr = new Date(note.ts || Date.now()).toLocaleTimeString();
@@ -1256,12 +1259,14 @@
           <div class="audio-card-header">
             <input class="title-input" />
             <span style="display:flex; align-items:center; gap:6px;">
+              ${own ? '<span style="font-size:10px; color:#fbbf24; border:1px dashed #92400e; border-radius:4px; padding:1px 5px;">propia</span>' : ''}
               <span style="font-size:10px; opacity:0.6;">${timestampStr}</span>
               <button type="button" class="btn-del-card" title="Eliminar nota">✕</button>
             </span>
           </div>
           <audio controls preload="metadata"></audio>
           <div class="audio-diag" style="display:none; font-size:11px; color:#888;"></div>
+          <svg class="audio-levels" width="100%" height="28" viewBox="0 0 120 28" preserveAspectRatio="none" style="display:none; margin-top:4px;"></svg>
           <div class="tr-row">
             <button type="button" class="btn-transcribe">🎙️ Transcribir</button>
             <span class="tr-status"></span>
@@ -1287,9 +1292,41 @@
           if (note.peakLevel != null) bits.push('🔊 pico ' + Number(note.peakLevel).toFixed(4));
           if (note.threshold != null) bits.push('umbral ' + Number(note.threshold).toFixed(4));
           const diagEl = card.querySelector('.audio-diag');
-          diagEl.textContent = bits.join(' · ');
-          diagEl.style.display = 'block';
-        }
+            diagEl.textContent = bits.join(' · ');
+            diagEl.style.display = 'block';
+          }
+
+          const svgLevels = card.querySelector('.audio-levels');
+          if (Array.isArray(note.levels) && note.levels.length > 0) {
+            const levels = note.levels;
+            const maxCount = Math.max(1, levels.length);
+            const w = 120, h = 28;
+            let path = '';
+            for (let i = 0; i < levels.length; i++) {
+              const x = (i / (maxCount - 1 || 1)) * w;
+              const v = Math.max(0, Math.min(1, levels[i] || 0));
+              const y = h - v * (h - 2) - 1;
+              path += (i === 0 ? 'M' : 'L') + x.toFixed(2) + ' ' + y.toFixed(2);
+            }
+            let bars = '';
+            const barW = maxCount > 1 ? w / maxCount : w;
+            for (let i = 0; i < levels.length; i++) {
+              const v = Math.max(0, Math.min(1, levels[i] || 0));
+              const bh = v * (h - 2);
+              bars += '<rect x="' + (i * barW).toFixed(2) + '" y="' + (h - bh - 1).toFixed(2) + '" width="' + (barW * 0.8).toFixed(2) + '" height="' + bh.toFixed(2) + '" fill="#4ade80" opacity="0.4" />';
+            }
+            const thresh = note.threshold != null ? Math.max(0, Math.min(1, Number(note.threshold))) : null;
+            let line = '';
+            if (thresh != null) {
+              const ty = h - thresh * (h - 2) - 1;
+              line = '<line x1="0" y1="' + ty.toFixed(2) + '" x2="' + w + '" y2="' + ty.toFixed(2) + '" stroke="#facc15" stroke-width="1" opacity="0.8" />';
+            }
+            svgLevels.innerHTML = bars + line;
+            svgLevels.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+            svgLevels.style.display = 'block';
+          } else {
+            svgLevels.style.display = 'none';
+          }
 
         let state = null;   // null | 'pending' | 'failed' | 'empty'
         let lastAsr = '';   // último texto devuelto por Whisper (para saber si el usuario lo editó)
@@ -1349,15 +1386,18 @@
         if (fresh) audioLogContainer.prepend(card);
         else audioLogContainer.appendChild(card);
 
-        // Avisa con insignia/vibración/tono/título solo si es una nota nueva en vivo
+        // Avisa con insignia/vibración/tono/título solo si es una nota nueva en vivo.
+        // Las notas propias (grabadas en la PC) NO generan insignia ni tono.
         if (fresh) {
-          if (!tabContentAudio.classList.contains('active')) {
-            unseenAudio++; updateBadge();
-            if (navigator.vibrate) navigator.vibrate(60);
+          if (!own) {
+            if (!tabContentAudio.classList.contains('active')) {
+              unseenAudio++; updateBadge();
+              if (navigator.vibrate) navigator.vibrate(60);
+            }
+            beep();
+            flashTitle(`🎙️ ${numFormatted} · Asistente`);
           }
-          beep();
-          flashTitle(`🎙️ ${numFormatted} · Asistente`);
-          setStatus('🎙️ Audio ' + numFormatted + ' recibido ✅', 2000);
+          setStatus(own ? ('🎙️ Nota propia ' + numFormatted + ' guardada ✅') : ('🎙️ Audio ' + numFormatted + ' recibido ✅'), 2000);
         }
 
         // Transcripción manual (estilo WhatsApp): evita que Whisper bloquee la interfaz
@@ -1434,6 +1474,88 @@
         audioCount = audioCounter;
         updateLastAct();
       });
+
+      // ============ GRABACIÓN PROPIA DESDE LA PC (nota local, NO se envía a Mago) ============
+      const btnOwnRec = document.getElementById('btnOwnRec');
+      let ownRec = null, ownStream = null, ownChunks = null, ownTimer = null, ownStartAt = 0;
+
+      function blobToDataUrl(blob) {
+        return new Promise(resolve => {
+          try {
+            const r = new FileReader();
+            r.onload = () => resolve(r.result);
+            r.onerror = () => resolve(null);
+            r.readAsDataURL(blob);
+          } catch (e) { resolve(null); }
+        });
+      }
+      function ownRecResetUi() {
+        clearInterval(ownTimer); ownTimer = null;
+        btnOwnRec.textContent = '⏺ Grabar';
+        btnOwnRec.classList.remove('danger');
+      }
+      function ownRecRelease() {
+        if (ownStream) { try { ownStream.getTracks().forEach(t => t.stop()); } catch (e) {} ownStream = null; }
+        ownRec = null; ownChunks = null;
+      }
+      function ownRecStop() {
+        if (!ownRec || ownRec.state === 'inactive') return;
+        try { ownRec.stop(); } catch (e) {}
+      }
+
+      btnOwnRec.onclick = async () => {
+        if (ownRec && ownRec.state !== 'inactive') { ownRecStop(); return; }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { setStatus('⚠️ Sin soporte de micrófono', 4000); return; }
+        if (typeof MediaRecorder === 'undefined') { setStatus('⚠️ MediaRecorder no disponible', 4000); return; }
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+        } catch (e) { setStatus('⚠️ Permiso de micrófono denegado', 4000); return; }
+        ownStream = stream;
+        ownChunks = [];
+        let rec = null;
+        try {
+          let mime = '';
+          try {
+            if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) mime = 'audio/webm;codecs=opus';
+            else if (MediaRecorder.isTypeSupported('audio/mp4')) mime = 'audio/mp4';
+          } catch (e) {}
+          rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 24000 } : { audioBitsPerSecond: 24000 });
+        } catch (e) {
+          try { rec = new MediaRecorder(stream); } catch (e2) {
+            ownRecRelease();
+            setStatus('⚠️ No se pudo iniciar la grabación', 4000); return;
+          }
+        }
+        ownRec = rec;
+        rec.ondataavailable = (e) => { if (e.data && e.data.size > 0) ownChunks.push(e.data); };
+        rec.onstop = () => {
+          const chunks = ownChunks || [];
+          const durMs = Date.now() - ownStartAt;
+          ownRecResetUi(); ownRecRelease(); // libera el micrófono
+          if (!chunks.length) { setStatus('⚠️ Grabación vacía', 3000); return; }
+          const type = chunks[0].type || 'audio/webm';
+          blobToDataUrl(new Blob(chunks, { type })).then((dataUrl) => {
+            if (!dataUrl) { setStatus('⚠️ No se pudo guardar el audio', 4000); return; }
+            const id = 'own_' + Date.now();
+            if (!audioIds.remember(id)) return;
+            audioCounter++; audioCount = audioCounter;
+            const note = { id, num: audioCounter, ts: Date.now(), audioBase64: dataUrl, color: 'color-default', title: '', text: '', own: true, durationMs: durMs };
+            notePut(note); noteTrim();
+            renderAudioCard(note, { fresh: true, own: true }); // misma tarjeta, marcador y guardado; sin alerta sonora/insignia
+          });
+        };
+        rec.start();
+        ownStartAt = Date.now();
+        btnOwnRec.textContent = '⏹ Detener (0s)';
+        btnOwnRec.classList.add('danger');
+        ownTimer = setInterval(() => {
+          const s = Math.floor((Date.now() - ownStartAt) / 1000);
+          btnOwnRec.textContent = '⏹ Detener (' + s + 's)';
+          if (s >= 60) ownRecStop(); // corte a los 60 s
+        }, 500);
+        setStatus('⏺ Grabando… (máx 60 s)', 2500);
+      };
 
       function handleStroke(data) {
         if (!data.id || strokeIds.has(data.id)) return;
