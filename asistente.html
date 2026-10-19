@@ -45,13 +45,29 @@
     }
     .audio-card input.title-input:focus { border-bottom: 1px dashed #4ade80; }
     audio { width: 100%; height: 32px; margin-top: 4px; }
-    .transcript {
-      margin-top: 4px; padding: 8px 10px; background: rgba(0,0,0,0.35); border-left: 3px solid #4ade80;
-      border-radius: 4px; color: #e5e5e5; font-size: 13px; line-height: 1.45; white-space: pre-wrap;
-      user-select: text; -webkit-user-select: text; cursor: text;
+    .tr-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .tr-status { font-size: 11px; color: #93c5fd; }
+    .tr-status.pending { color: #facc15; font-style: italic; }
+    .tr-status.failed { color: #fca5a5; }
+    .note-text {
+      width: 100%; min-height: 56px; margin-top: 2px; padding: 8px 10px; resize: vertical;
+      background: rgba(0,0,0,0.35); color: #93c5fd; font: inherit; font-size: 13px; line-height: 1.45;
+      border: 1px solid #1e3a8a; border-left: 3px solid #3b82f6; border-radius: 4px; outline: none;
+      user-select: text; -webkit-user-select: text;
     }
-    .transcript.pending { color: #aaa; font-style: italic; border-left-color: #facc15; }
-    .transcript.failed { color: #fca5a5; border-left-color: #ef4444; }
+    .note-text:focus { border-color: #60a5fa; }
+    .note-text::placeholder { color: #5b7aa8; }
+    .tr-alt {
+      font-size: 11px; color: #bbb; background: rgba(250,204,21,0.07); border: 1px dashed #854d0e;
+      border-radius: 4px; padding: 6px 8px; line-height: 1.4;
+    }
+    .tr-alt .alt-txt { color: #e5e5e5; user-select: text; -webkit-user-select: text; }
+    .tr-alt button { margin-left: 6px; }
+    .set-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 12px; color: #ccc; }
+    .set-row select {
+      background: #111; color: #eee; border: 1px solid #333; border-radius: 6px;
+      padding: 3px 6px; font-size: 12px; outline: none;
+    }
     .btn-transcribe {
       margin-top: 6px; align-self: flex-start; background: #25d366; color: #0b141a;
       border: none; border-radius: 999px; padding: 7px 16px; font-size: 12px; font-weight: 700;
@@ -108,12 +124,22 @@
       flex: 1; padding: 6px 10px calc(env(safe-area-inset-bottom, 6px) + 6px);
       display: flex; flex-direction: column; gap: 5px; overflow: hidden;
     }
-    #recognizedText {
-      flex: 1; width: 100%; min-height: 50px;
-      background: #0a0a0a; color: #4ade80; border: 1px solid #333;
-      border-radius: 7px; padding: 8px; font-size: 1.1rem; font-weight: 500;
-      resize: none; outline: none; line-height: 1.4; overflow-y: auto; white-space: pre-wrap;
+    /* Texto global con overlay: el texto de audios se ve en azul, el de trazos en verde.
+       Si el overlay falla, .overlay-on no se aplica y el textarea se ve normal. */
+    #textWrap { position: relative; flex: 1; min-height: 50px; }
+    #textBackdrop, #recognizedText {
+      position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+      padding: 8px; border: 1px solid #333; border-radius: 7px;
+      font-family: monospace; font-size: 1.1rem; font-weight: 500; line-height: 1.4; letter-spacing: normal;
+      white-space: pre-wrap; overflow-wrap: break-word; word-wrap: break-word; tab-size: 4;
+      overflow-y: auto; scrollbar-gutter: stable; background: #0a0a0a; color: #4ade80;
     }
+    #textBackdrop { pointer-events: none; scrollbar-width: thin; scrollbar-color: transparent transparent; }
+    #textBackdrop .aud { color: #60a5fa; }
+    #recognizedText { resize: none; outline: none; scrollbar-width: thin; scrollbar-color: #444 transparent; }
+    #textWrap:not(.overlay-on) #textBackdrop { display: none; }
+    #textWrap.overlay-on #recognizedText { background: transparent; color: transparent; caret-color: #4ade80; }
+    #textWrap.overlay-on #recognizedText::selection { background: rgba(96,165,250,0.35); color: transparent; }
     #correctBar {
       display: none; gap: 6px; align-items: center; background: #111; padding: 5px; border-radius: 7px;
     }
@@ -171,6 +197,18 @@
           <input type="checkbox" id="chkAlerts"> 🔔 Alertas sonoras
         </label>
       </div>
+      <div class="set-row">
+        <label style="display:flex; gap:5px; align-items:center; font-size:12px; color:#ccc; font-weight:400; opacity:1;">
+          Modelo de voz:
+          <select id="selModel">
+            <option value="small">Preciso (small · ~250 MB)</option>
+            <option value="base">Rápido (base · ~80 MB)</option>
+          </select>
+        </label>
+        <label style="display:flex; gap:5px; align-items:center; font-size:12px; color:#ccc; cursor:pointer; font-weight:400; opacity:1;">
+          <input type="checkbox" id="chkEnhance" checked> 🤫 Realzar susurros
+        </label>
+      </div>
       <div id="audioLogContainer" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
         <div class="audio-card"><i>Esperando notas de voz...</i></div>
       </div>
@@ -209,7 +247,10 @@
         <button class="btn" id="btnCancelCorrect">✕</button>
       </div>
       <label>Texto estructurado global:</label>
-      <textarea id="recognizedText" placeholder="Texto combinado de trazos y audio..."></textarea>
+      <div id="textWrap">
+        <div id="textBackdrop" aria-hidden="true"></div>
+        <textarea id="recognizedText" placeholder="Texto combinado de trazos y audio..."></textarea>
+      </div>
     </div>
   </div>
 
@@ -309,6 +350,29 @@
       const btnCancelCorrect = document.getElementById('btnCancelCorrect');
       const audioLogContainer = document.getElementById('audioLogContainer');
       const contextMenu = document.getElementById('contextMenu');
+      const textWrap = document.getElementById('textWrap');
+      const textBackdrop = document.getElementById('textBackdrop');
+
+      // ============ TEXTO GLOBAL: audios en azul (overlay detrás del textarea) ============
+      const AUDIO_BLOCK_RE = /\[PREGUNTA \d+ - [^\]\n]*\]\n?[^\n]*/g;
+      function escHtml(t) { return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+      function renderBackdrop() {
+        try {
+          const v = recognizedText.value;
+          let html = '', last = 0, m;
+          AUDIO_BLOCK_RE.lastIndex = 0;
+          while ((m = AUDIO_BLOCK_RE.exec(v)) !== null) {
+            html += escHtml(v.slice(last, m.index)) + '<span class="aud">' + escHtml(m[0]) + '</span>';
+            last = m.index + m[0].length;
+          }
+          html += escHtml(v.slice(last));
+          textBackdrop.innerHTML = html + '\u200b';
+          textBackdrop.scrollTop = recognizedText.scrollTop;
+          textWrap.classList.add('overlay-on');
+        } catch (e) { textWrap.classList.remove('overlay-on'); }
+      }
+      recognizedText.addEventListener('scroll', () => { textBackdrop.scrollTop = recognizedText.scrollTop; });
+      renderBackdrop();
 
       let dpr=1, cssW=0, cssH=0;
       let glyphs = [];
@@ -336,7 +400,6 @@
       }
       const strokeIds = makeIdSet(5000);
       const audioIds = makeIdSet(300);
-      const transcribeBlocks = new Map(); // marker -> longitud del bloque insertado
 
       const SESSION_KEY = 'stealth-asistente-session-v1';
       let restoredPrefix = '';
@@ -390,6 +453,7 @@
 
       // ============ PERSISTENCIA DE SESIÓN (sobrevive a F5) ============
       function scheduleSave() {
+        renderBackdrop();
         clearTimeout(saveTimer);
         saveTimer = setTimeout(saveSession, 400);
       }
@@ -420,6 +484,8 @@
           audioIds.load(saved.audioIds);
         }
       } catch (e) {}
+
+      renderBackdrop();
 
       // Guardado inmediato al perder visibilidad / cerrar: el debounce de 400ms
       // solo cubre edición continua; sin esto se perdían los últimos cambios en F5.
@@ -559,6 +625,7 @@
         for (const g of glyphs) {
           if (g.isNewline) { cursorX = PAD; cursorY += LETTER_H + LINE_GAP; continue; }
           if (g.isSpace) { cursorX += LETTER_H * 0.4; continue; }
+          if (g.isAudioBlock) continue;
           if (g.isTextToken) { cursorX += g.textWidth || (g.text.length * LETTER_H * 0.35); continue; }
           const aspect = g.bbox ? g.bbox.bw/g.bbox.bh : 1;
           let gw = Math.max(LETTER_H*0.3, Math.min(LETTER_H*1.6, LETTER_H * aspect));
@@ -610,7 +677,7 @@
       }
 
       function drawGlyph(g, highlight=false) {
-        if (g.isNewline || g.isSpace) return;
+        if (g.isNewline || g.isSpace || g.isAudioBlock) return;
         if (g.isTextToken) {
           ctx.save();
           ctx.font = `600 ${LETTER_H * 0.65}px system-ui, sans-serif`;
@@ -649,7 +716,7 @@
 
         for (let i = glyphs.length-1; i >= 0; i--) {
           const g = glyphs[i];
-          if (g.isNewline || g.isSpace || g.isTextToken) continue;
+          if (g.isNewline || g.isSpace || g.isTextToken || g.isAudioBlock) continue;
           if (clickX >= g.x-6 && clickX <= g.x+g.w+6 && clickY >= g.y-6 && clickY <= g.y+g.h+6) {
             selectGlyphForCorrection(g);
             return;
@@ -689,7 +756,7 @@
         let next = null;
         if (idx !== -1) {
           for (let i = idx + 1; i < glyphs.length; i++) {
-            if (!glyphs[i].isNewline && !glyphs[i].isSpace && !glyphs[i].isTextToken) { next = glyphs[i]; break; }
+            if (!glyphs[i].isNewline && !glyphs[i].isSpace && !glyphs[i].isTextToken && !glyphs[i].isAudioBlock) { next = glyphs[i]; break; }
           }
         }
         if (next) selectGlyphForCorrection(next);
@@ -701,6 +768,7 @@
         for (const g of glyphs) {
           if (g.isNewline) s += '\n';
           else if (g.isSpace) s += ' ';
+          else if (g.isAudioBlock) s += blockStr(g.marker, g.text);
           else if (g.isTextToken) s += g.text;
           else s += (g.char || '?');
         }
@@ -718,7 +786,6 @@
         // Si se vaciara, la próxima resincronización de Mago reenviaría las trazas
         // viejas de su buffer y "revivirían" el texto ya borrado.
         glyphs = []; restoredPrefix = '';
-        transcribeBlocks.clear();
         recognizedText.value = ''; selectedGlyph = null;
         correctBar.classList.remove('show');
         relayout(); scheduleSave();
@@ -825,21 +892,31 @@
       document.addEventListener('click', () => { contextMenu.style.display = 'none'; });
 
       // ============ TRANSCRIPCIÓN LOCAL (Whisper en el navegador) ============
-      // Modelos multilingües: 'Xenova/whisper-tiny' (~40MB, rápido, menos preciso),
-      // 'Xenova/whisper-base' (~80MB, equilibrado), 'Xenova/whisper-small' (~250MB, más preciso, más lento)
-      const WHISPER_MODEL = 'Xenova/whisper-base';
+      // 'small' entiende bastante mejor voz baja/susurrada que 'base', a costa de ser más lento.
+      const MODELS = {
+        base:  { id: 'Xenova/whisper-base' },
+        small: { id: 'Xenova/whisper-small' }
+      };
       const WHISPER_LANG = 'spanish';
       const TRANSFORMERS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1';
-      let asrPromise = null;
+      let curModel = 'small';
+      let enhanceOn = true;
+      try {
+        const m = localStorage.getItem('stealth-asist-model');
+        if (m && MODELS[m]) curModel = m;
+        enhanceOn = localStorage.getItem('stealth-asist-enhance') !== '0';
+      } catch (e) {}
+      const asrCache = {};
       let asrQueue = Promise.resolve();
 
-      function loadAsr() {
-        if (!asrPromise) {
-          asrPromise = (async () => {
-            setStatus('🧠 Cargando modelo de voz…');
+      function loadAsr(key) {
+        key = key || curModel;
+        if (!asrCache[key]) {
+          asrCache[key] = (async () => {
+            setStatus('🧠 Cargando modelo de voz (' + key + ')…');
             const { pipeline, env } = await import(TRANSFORMERS_URL);
             env.allowLocalModels = false;
-            const p = await pipeline('automatic-speech-recognition', WHISPER_MODEL, {
+            const p = await pipeline('automatic-speech-recognition', MODELS[key].id, {
               progress_callback: (info) => {
                 if (info && info.status === 'progress' && typeof info.progress === 'number') {
                   setStatus('🧠 Modelo de voz ' + Math.round(info.progress) + '%');
@@ -849,9 +926,9 @@
             setLink();
             return p;
           })();
-          asrPromise.catch(() => { asrPromise = null; setStatus('⚠️ Sin modelo de voz', 5000); });
+          asrCache[key].catch(() => { delete asrCache[key]; setStatus('⚠️ Sin modelo de voz', 5000); });
         }
-        return asrPromise;
+        return asrCache[key];
       }
 
       async function dataUrlToFloat32(dataUrl) {
@@ -864,51 +941,144 @@
         } finally { try { ac.close(); } catch {} }
       }
 
+      // Pre-procesado pensado para susurros (voz muy baja, sin tono):
+      //  1) filtro pasa-altos ~90 Hz (saca zumbidos/soplidos graves que dominan el pico)
+      //  2) recorta el silencio del inicio y del final (ahí Whisper "alucina" textos inventados)
+      //  3) sube el volumen para que la voz quede en un nivel que Whisper maneja bien
+      function enhanceForWhisper(x) {
+        const n = x.length;
+        if (n < 8000) return x;
+        const y = new Float32Array(n);
+        const RC = 1 / (2 * Math.PI * 90), a = RC / (RC + 1 / 16000);
+        let py = 0, px = x[0];
+        for (let i = 0; i < n; i++) { const xi = x[i]; py = a * (py + xi - px); px = xi; y[i] = py; }
+
+        const F = 320, nf = Math.floor(n / F); // frames de 20 ms
+        const rms = new Float32Array(nf);
+        for (let f = 0; f < nf; f++) {
+          let sum = 0;
+          for (let i = f * F, e = i + F; i < e; i++) sum += y[i] * y[i];
+          rms[f] = Math.sqrt(sum / F);
+        }
+        const sorted = Array.from(rms).sort((p, q) => p - q);
+        const noise = sorted[Math.floor(nf * 0.1)] || 0;
+        const loud = sorted[Math.min(nf - 1, Math.floor(nf * 0.95))] || 0;
+        if (loud < 1e-5) return y; // silencio total: nada que realzar
+
+        // recorte de bordes (con 300 ms de margen)
+        const thr = Math.max(noise * 3, loud * 0.15, 1e-4);
+        let first = -1, last = -1;
+        for (let f = 0; f < nf; f++) if (rms[f] >= thr) { if (first < 0) first = f; last = f; }
+        let from = 0, to = n;
+        if (first >= 0) {
+          const pad = 15;
+          from = Math.max(0, (first - pad) * F);
+          to = Math.min(n, (last + 1 + pad) * F);
+          if (to - from < 16000 * 0.6) { from = 0; to = n; } // demasiado corto: no recortar
+        }
+        const seg = y.subarray(from, to);
+
+        // ganancia: lleva la voz (percentil 95 de RMS) a ~0.1, sin pasar de +32x ni saturar picos
+        let peak = 0;
+        for (let i = 0; i < seg.length; i++) { const v = Math.abs(seg[i]); if (v > peak) peak = v; }
+        let gain = Math.min(32, Math.max(1, 0.1 / loud));
+        if (peak > 0) gain = Math.min(gain, 0.95 / peak);
+        if (gain <= 1.05) return seg;
+        const out = new Float32Array(seg.length);
+        for (let i = 0; i < seg.length; i++) out[i] = seg[i] * gain;
+        return out;
+      }
+
+      // Whisper a veces inventa frases típicas sobre silencio/ruido: se descartan si es todo lo que devolvió
+      const HALLUC_RE = /(amara\.org|subt[ií]tulos (realizados|por|de)|gracias por (ver|vernos|su atenci[oó]n|mirar)|suscr[ií]b|dale (like|me gusta)|hasta la pr[oó]xima)/i;
+      const FILLER_RE = /^\W*\[?(m[uú]sica|aplausos|silencio|risas)\]?\W*$/i;
+      function cleanAsr(t) {
+        t = (t || '').replace(/\s+/g, ' ').trim();
+        if (!t) return '';
+        if (FILLER_RE.test(t)) return '';
+        if (t.length < 90 && HALLUC_RE.test(t)) return '';
+        return t;
+      }
+
       // Cola: transcribe de a un audio por vez
       function transcribe(dataUrl) {
+        const key = curModel, enh = enhanceOn;
         const job = asrQueue.then(async () => {
-          const asr = await loadAsr();
-          const samples = await dataUrlToFloat32(dataUrl);
-          const out = await asr(samples, { language: WHISPER_LANG, task: 'transcribe', chunk_length_s: 30 });
-          return ((out && out.text) || '').trim();
+          const asr = await loadAsr(key);
+          let samples = await dataUrlToFloat32(dataUrl);
+          if (enh) { try { samples = enhanceForWhisper(samples); } catch (e) { console.warn('realce falló', e); } }
+          const out = await asr(samples, { language: WHISPER_LANG, task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 });
+          return cleanAsr(out && out.text);
         });
         asrQueue = job.catch(() => {});
         return job;
       }
 
+      // ---- Controles de modelo / realce ----
+      const selModel = document.getElementById('selModel');
+      const chkEnhance = document.getElementById('chkEnhance');
+      selModel.value = curModel;
+      chkEnhance.checked = enhanceOn;
+      selModel.onchange = () => {
+        if (!MODELS[selModel.value]) return;
+        curModel = selModel.value;
+        try { localStorage.setItem('stealth-asist-model', curModel); } catch (e) {}
+        loadAsr(curModel).catch(() => {});
+      };
+      chkEnhance.onchange = () => {
+        enhanceOn = chkEnhance.checked;
+        try { localStorage.setItem('stealth-asist-enhance', enhanceOn ? '1' : '0'); } catch (e) {}
+      };
+
+      // ============ BLOQUES DE AUDIO EN EL TEXTO GLOBAL ============
+      // Cada nota ocupa un bloque "[PREGUNTA NN - hora]\ntexto". Ese bloque vive también en la
+      // línea de tiempo (glyphs) para que NO se pierda al corregir una letra o deshacer.
       const PENDING_TXT = '⏳ Transcribiendo...';
       const FAILED_TXT = '⚠️ No se pudo transcribir';
+      const NOVOICE_TXT = '(sin voz detectada)';
 
-      function setTranscriptUi(tEl, txt, state) {
-        tEl.textContent = txt;
-        tEl.classList.remove('pending', 'failed');
-        if (state) tEl.classList.add(state);
+      function blockStr(marker, txt) { return '\n\n' + marker + '\n' + txt + '\n'; }
+
+      // Reemplaza (o quita si txt === null) el bloque de `marker` dentro de `str`. Devuelve null si no está.
+      function patchBlock(str, marker, txt) {
+        const idx = str.lastIndexOf(marker);
+        if (idx === -1) return null;
+        const a = idx + marker.length;
+        let end = a;
+        if (str[a] === '\n') { const nl = str.indexOf('\n', a + 1); end = nl === -1 ? str.length : nl; }
+        if (txt === null) {
+          let s0 = idx;
+          while (s0 > 0 && str[s0 - 1] === '\n' && idx - s0 < 2) s0--;
+          let e0 = end;
+          if (str[e0] === '\n') e0++;
+          return str.slice(0, s0) + str.slice(e0);
+        }
+        return str.slice(0, idx) + marker + '\n' + txt + str.slice(end);
       }
 
-      // Inserta o reemplaza el bloque del marcador en el texto global SIN tocar
-      // el texto que se haya escrito después de esa transcripción (trazos, otras preguntas…)
-      function upsertTranscription(marker, txt) {
-        const block = marker + '\n' + txt;
-        const val = recognizedText.value;
-        const idx = val.lastIndexOf(marker);
-        if (idx === -1) {
-          recognizedText.value = (val ? val + '\n\n' : '') + block;
-        } else {
-          let tail;
-          const len = transcribeBlocks.get(marker) || 0;
-          if (len > 0) tail = val.slice(idx + len);
-          else {
-            const next = val.indexOf('\n\n[PREGUNTA ', idx + marker.length);
-            tail = next === -1 ? '' : val.slice(next);
-          }
-          recognizedText.value = val.slice(0, idx) + block + tail;
+      // Inserta/actualiza/quita (txt === null) el bloque SIN tocar lo demás que se haya escrito
+      function upsertBlock(marker, txt) {
+        const entry = glyphs.find(g => g.isAudioBlock && g.marker === marker);
+        const inPrefix = restoredPrefix.includes(marker); // nota de una sesión anterior (texto restaurado)
+        if (txt === null) { if (entry) glyphs.splice(glyphs.indexOf(entry), 1); }
+        else if (entry) entry.text = txt;
+        else if (!inPrefix) glyphs.push({ isAudioBlock: true, marker, text: txt });
+
+        if (inPrefix) { const p = patchBlock(restoredPrefix, marker, txt); if (p !== null) restoredPrefix = p; }
+
+        const v = recognizedText.value;
+        let nv = patchBlock(v, marker, txt), appended = false;
+        if (nv === null) {
+          if (txt === null) nv = v;
+          else { nv = v + blockStr(marker, txt); appended = true; }
         }
-        transcribeBlocks.set(marker, block.length);
-        try { recognizedText.scrollTop = recognizedText.scrollHeight; } catch (e) {}
+        if (nv !== v) {
+          recognizedText.value = nv;
+          if (appended) { try { recognizedText.scrollTop = recognizedText.scrollHeight; } catch (e) {} }
+        }
         scheduleSave();
       }
 
-      loadAsr().catch(() => {}); // precarga el modelo al abrir la página
 
       // ============ ENLACE BIDIRECCIONAL (presencia + resincronización) ============
       const chkAuto = document.getElementById('chkAutoTranscribe');
@@ -1061,7 +1231,12 @@
 
         audioCounter++;
         audioCount = audioCounter;
-        const note = { id: noteId, num: audioCounter, ts: Date.now(), audioBase64: data.audioBase64, color: 'color-default', title: '' };
+        const note = { id: noteId, num: audioCounter, ts: Date.now(), audioBase64: data.audioBase64, color: 'color-default', title: '', text: '' };
+        // Diagnóstico del corte (opcional: los mensajes viejos no lo traen)
+        if (data.durationMs != null) note.durationMs = data.durationMs;
+        if (data.stopReason) note.stopReason = data.stopReason;
+        if (data.peakLevel != null) note.peakLevel = data.peakLevel;
+        if (data.threshold != null) note.threshold = data.threshold;
         notePut(note); noteTrim();
         renderAudioCard(note, { fresh: true });
       }
@@ -1086,14 +1261,64 @@
             </span>
           </div>
           <audio controls preload="metadata"></audio>
-          <button type="button" class="btn-transcribe">🎙️ Transcribir</button>
-          <div class="transcript pending">⏸ Tocá "Transcribir" para pasar a texto</div>
+          <div class="audio-diag" style="display:none; font-size:11px; color:#888;"></div>
+          <div class="tr-row">
+            <button type="button" class="btn-transcribe">🎙️ Transcribir</button>
+            <span class="tr-status"></span>
+          </div>
+          <textarea class="note-text" rows="3" placeholder="✍️ Escribí acá lo que dice el audio (o transcribilo y corregí). Lo que pongas va directo al texto global."></textarea>
+          <div class="tr-alt" style="display:none;"></div>
         `;
         card.querySelector('.title-input').value = note.title || ('Pregunta ' + numFormatted);
         card.querySelector('audio').src = note.audioBase64;
-        const tEl = card.querySelector('.transcript');
         const btnT = card.querySelector('.btn-transcribe');
+        const stEl = card.querySelector('.tr-status');
+        const ta = card.querySelector('.note-text');
+        const altEl = card.querySelector('.tr-alt');
         const titleInput = card.querySelector('.title-input');
+        ta.value = note.text || '';
+
+        // Diagnóstico de corte: solo si el Mago envió esos campos (mensajes viejos sin datos no muestran nada)
+        const REASON_TXT = { silence: 'silencio', max: 'máximo', triple: 'triple toque', error: 'error', other: 'otro' };
+        if (note.durationMs != null || note.stopReason || note.peakLevel != null || note.threshold != null) {
+          const bits = [];
+          if (note.durationMs != null) bits.push('⏱ ' + (note.durationMs / 1000).toFixed(1) + ' s');
+          if (note.stopReason) bits.push('✂ ' + (REASON_TXT[note.stopReason] || note.stopReason));
+          if (note.peakLevel != null) bits.push('🔊 pico ' + Number(note.peakLevel).toFixed(4));
+          if (note.threshold != null) bits.push('umbral ' + Number(note.threshold).toFixed(4));
+          const diagEl = card.querySelector('.audio-diag');
+          diagEl.textContent = bits.join(' · ');
+          diagEl.style.display = 'block';
+        }
+
+        let state = null;   // null | 'pending' | 'failed' | 'empty'
+        let lastAsr = '';   // último texto devuelto por Whisper (para saber si el usuario lo editó)
+        let dirty = false, typeTimer = null;
+        const flat = (t) => (t || '').replace(/\s*\n\s*/g, ' ').trim();
+        const setSt = (txt, cls) => { stEl.textContent = txt; stEl.className = 'tr-status' + (cls ? ' ' + cls : ''); };
+
+        // Qué se ve en el texto global para esta nota: lo escrito/transcripto, o el estado actual
+        function syncGlobal() {
+          const txt = flat(ta.value);
+          if (txt) upsertBlock(marker, txt);
+          else if (state === 'pending') upsertBlock(marker, PENDING_TXT);
+          else if (state === 'failed') upsertBlock(marker, FAILED_TXT);
+          else if (state === 'empty') upsertBlock(marker, NOVOICE_TXT);
+          else upsertBlock(marker, null);
+        }
+        function persistText() {
+          noteGet(note.id).then(existing => { if (existing) notePut({ ...existing, text: ta.value }); });
+        }
+        function commitText() { dirty = false; syncGlobal(); persistText(); }
+
+        // Texto manual: se refleja en el texto global mientras escribís (con una pausa corta)
+        ta.addEventListener('input', () => {
+          dirty = true;
+          if (state === 'empty') state = null;
+          clearTimeout(typeTimer);
+          typeTimer = setTimeout(commitText, 350);
+        });
+        ta.addEventListener('blur', () => { if (dirty) { clearTimeout(typeTimer); commitText(); } });
 
         titleInput.addEventListener('change', () => {
           noteGet(note.id).then(existing => { if (existing) notePut({ ...existing, title: titleInput.value }); });
@@ -1110,6 +1335,7 @@
         };
 
         card.addEventListener('contextmenu', (e) => {
+          if (e.target === ta) return; // en el cuadro de texto se deja el menú normal (copiar/pegar)
           e.preventDefault();
           targetAudioCard = card;
           contextMenu.style.left = Math.max(4, Math.min(e.clientX, innerWidth - 190)) + 'px';
@@ -1139,21 +1365,50 @@
           if (btnT.disabled) return;
           btnT.disabled = true;
           btnT.textContent = '⏳ Transcribiendo…';
-          upsertTranscription(marker, PENDING_TXT);
-          setTranscriptUi(tEl, PENDING_TXT, 'pending');
+          state = 'pending';
+          setSt('⏳ Transcribiendo…', 'pending');
+          altEl.style.display = 'none';
+          syncGlobal(); // si no hay texto manual, deja el aviso "Transcribiendo..." en el texto global
           setStatus('🧠 Transcribiendo audio…');
           transcribe(note.audioBase64)
             .then(text => {
-              const finalTxt = text || '(sin voz detectada)';
-              upsertTranscription(marker, finalTxt);
-              setTranscriptUi(tEl, finalTxt, null);
-              btnT.textContent = '✅ Transcrito';
+              btnT.textContent = '🔄 Re-transcribir';
+              btnT.disabled = false;
+              if (!text) {
+                state = flat(ta.value) ? null : 'empty';
+                setSt('(sin voz detectada)', 'failed');
+                syncGlobal();
+                setStatus('⚠️ Sin voz detectada', 2500);
+                return;
+              }
+              state = null;
+              const mine = flat(ta.value);
+              if (!mine || mine === lastAsr) {
+                // Nada escrito a mano (o es el texto anterior de Whisper): se completa el cuadro
+                ta.value = text; lastAsr = flat(text);
+                setSt('✅ Transcrito · corregí abajo si hace falta');
+                commitText();
+              } else {
+                // El usuario ya escribió algo: se conserva y se ofrece el texto de Whisper
+                lastAsr = flat(text);
+                setSt('✅ Transcrito · se conservó tu texto');
+                altEl.innerHTML = '<b>Whisper:</b> <span class="alt-txt"></span> <button type="button" class="btn">Usar este</button>';
+                altEl.querySelector('.alt-txt').textContent = text;
+                altEl.querySelector('button').onclick = () => {
+                  ta.value = text; altEl.style.display = 'none';
+                  setSt('✅ Texto de Whisper aplicado');
+                  commitText();
+                };
+                altEl.style.display = 'block';
+                syncGlobal();
+              }
               setStatus('✅ Transcrito', 1500);
             })
             .catch(err => {
               console.error('Transcripción falló:', err);
-              upsertTranscription(marker, FAILED_TXT);
-              setTranscriptUi(tEl, FAILED_TXT, 'failed');
+              state = flat(ta.value) ? null : 'failed';
+              setSt('⚠️ No se pudo transcribir', 'failed');
+              syncGlobal();
               btnT.textContent = '🔄 Reintentar';
               btnT.disabled = false;
               setStatus('⚠️ Transcripción fallida', 4000);
@@ -1260,8 +1515,10 @@
 
       // ============ DESHACER ÚLTIMO GLIFO ============
       function undoLast() {
-        if (glyphs.length === 0) return;
-        glyphs.pop();
+        let li = glyphs.length - 1;
+        while (li >= 0 && glyphs[li].isAudioBlock) li--; // el deshacer no toca los bloques de audio
+        if (li < 0) return;
+        glyphs.splice(li, 1);
         selectedGlyph = null;
         correctBar.classList.remove('show');
         rebuildTextFromGlyphs();

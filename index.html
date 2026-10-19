@@ -147,13 +147,15 @@
            else noiseFloor += (lvl - noiseFloor) * 0.0005;
            noiseFloor = Math.min(noiseFloor, 0.012);
 
-           const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.003));
+            const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.003));
+            s.lastThreshold = threshold;
+            if (lvl > s.peakLevel) s.peakLevel = lvl;
 
-           if (elapsed < GRACE_MS) { s.silenceSince = null; return; }
+            if (elapsed < GRACE_MS) { s.silenceSince = null; return; }
 
-           if (lvl < threshold) {
-             if (s.silenceSince === null) s.silenceSince = now;
-             else if (now - s.silenceSince >= SILENCE_CUT_MS) finishRecording(s, false);
+            if (lvl < threshold) {
+              if (s.silenceSince === null) s.silenceSince = now;
+              else if (now - s.silenceSince >= SILENCE_CUT_MS) { s.stopReason = 'silence'; finishRecording(s, false); }
            } else {
              s.silenceSince = null;
            }
@@ -187,7 +189,7 @@
         catch (e) { try { rec = new MediaRecorder(audioStream); } catch (e2) { return; } }
 
         const chunks = [];
-        const session = { rec, startedAt: performance.now(), silenceSince: null, vad: null, timer: null, done: false, restarting: false };
+        const session = { rec, startedAt: performance.now(), silenceSince: null, vad: null, timer: null, done: false, restarting: false, stopReason: null, peakLevel: 0, lastThreshold: 0 };
         levelSmooth = 0;
 
         rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
@@ -204,8 +206,12 @@
                   id: 'audio_' + Date.now(),
                   from: CLIENT_ID,
                   audioBase64: reader.result,
-                  ts: Date.now()
+                  ts: Date.now(),
+                  durationMs: Math.round(performance.now() - session.startedAt),
+                  stopReason: session.stopReason || 'other'
                 };
+                if (session.peakLevel > 0) payload.peakLevel = Math.round(session.peakLevel * 10000) / 10000;
+                if (session.lastThreshold > 0) payload.threshold = Math.round(session.lastThreshold * 10000) / 10000;
                 // Queda en el buffer por si el asistente no lo recibe a la primera
                 audioBuffer.set(payload.id, payload);
                 while (audioBuffer.size > AUDIO_BUF_MAX) {
@@ -227,7 +233,7 @@
          current = session;
          if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
 
-         session.timer = setTimeout(() => finishRecording(session, false), MAX_RECORD_MS);
+         session.timer = setTimeout(() => { session.stopReason = 'max'; finishRecording(session, false); }, MAX_RECORD_MS);
          if (analyser) session.vad = setInterval(() => vadTick(session), VAD_TICK_MS);
       }
 
@@ -238,6 +244,7 @@
           return;
         }
         if (current) {
+          if (!current.stopReason) current.stopReason = 'triple';
           finishRecording(current, true);
           setTimeout(startNewRecording, 250);
           return;
