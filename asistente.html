@@ -197,6 +197,9 @@
           <input type="checkbox" id="chkAlerts"> 🔔 Alertas sonoras
         </label>
         <button type="button" class="btn" id="btnOwnRec">⏺ Grabar</button>
+        <button type="button" class="btn" id="btnBackup" title="Descarga un archivo con el texto global, las notas de voz y la memoria de letras">💾 Exportar respaldo</button>
+        <button type="button" class="btn" id="btnRestore" title="Restaura un respaldo exportado antes">📂 Importar respaldo</button>
+        <input type="file" id="fileRestore" accept=".json,application/json" style="display:none;">
       </div>
       <div class="set-row">
         <label style="display:flex; gap:5px; align-items:center; font-size:12px; color:#ccc; font-weight:400; opacity:1;">
@@ -1555,6 +1558,109 @@
           if (s >= 60) ownRecStop(); // corte a los 60 s
         }, 500);
         setStatus('⏺ Grabando… (máx 60 s)', 2500);
+      };
+
+      // ============ RESPALDO: exportar / importar texto, notas de voz y memoria de letras ============
+      const btnBackup = document.getElementById('btnBackup');
+      const btnRestore = document.getElementById('btnRestore');
+      const fileRestore = document.getElementById('fileRestore');
+      const BACKUP_APP = 'stealth-asistente';
+
+      function pad2(n) { return String(n).padStart(2, '0'); }
+      function stampNow() {
+        const d = new Date();
+        return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + '_' +
+               pad2(d.getHours()) + '-' + pad2(d.getMinutes()) + '-' + pad2(d.getSeconds());
+      }
+      function validMemory(arr) {
+        return (Array.isArray(arr) ? arr : []).filter(m => m && typeof m.char === 'string' && Array.isArray(m.points) && m.points.length === 16);
+      }
+
+      btnBackup.onclick = async () => {
+        try {
+          setStatus('💾 Preparando respaldo…');
+          const notes = await noteAll();
+          notes.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+          const data = {
+            app: BACKUP_APP, version: 1, exportedAt: new Date().toISOString(),
+            session: { text: recognizedText.value, counter: audioCounter, strokes: strokeCount, letterH: LETTER_H },
+            notes: notes,
+            memory: memory
+          };
+          const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'respaldo-asistente-' + stampNow() + '.json';
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 5000);
+          setStatus('💾 Respaldo guardado (' + notes.length + ' notas)', 3500);
+        } catch (e) {
+          console.error('respaldo falló', e);
+          setStatus('⚠️ No se pudo crear el respaldo', 4000);
+        }
+      };
+
+      btnRestore.onclick = () => fileRestore.click();
+      fileRestore.onchange = async (e) => {
+        const f = e.target.files && e.target.files[0];
+        try { e.target.value = ''; } catch (e0) {}
+        if (!f) return;
+        let data;
+        try { data = JSON.parse(await f.text()); }
+        catch (err) { alert('El archivo no es un respaldo válido (no se puede leer).'); return; }
+        if (!data || data.app !== BACKUP_APP || !data.session || typeof data.session.text !== 'string') {
+          alert('Este archivo no parece un respaldo de este asistente.'); return;
+        }
+
+        // Notas válidas y cuáles son nuevas (las que ya existen se omiten: nunca se duplican)
+        const inNotes = (Array.isArray(data.notes) ? data.notes : []).filter(n =>
+          n && typeof n.id === 'string' && typeof n.audioBase64 === 'string' && n.audioBase64.startsWith('data:'));
+        const fresh = [];
+        for (const n of inNotes) {
+          if (audioIds.has(n.id)) continue;
+          if (await noteGet(n.id)) continue;
+          fresh.push(n);
+        }
+        const mem = validMemory(data.memory);
+        const when = data.exportedAt ? new Date(data.exportedAt).toLocaleString() : 'fecha desconocida';
+        const omitted = inNotes.length - fresh.length;
+        const msg = 'Respaldo del ' + when + '\n\n' +
+          '• Texto global: ' + data.session.text.length + ' caracteres (REEMPLAZA el texto actual)\n' +
+          '• Notas de voz: ' + fresh.length + ' nuevas' + (omitted ? ' (' + omitted + ' ya estaban y se omiten)' : '') + '\n\n¿Importar?';
+        if (!confirm(msg)) return;
+
+        // Copia de seguridad del texto actual por si te arrepentís
+        try { localStorage.setItem('stealth-asist-pre-import', JSON.stringify({ text: recognizedText.value, at: Date.now() })); } catch (e1) {}
+
+        // Texto global
+        glyphs = []; selectedGlyph = null; correctBar.classList.remove('show');
+        restoredPrefix = data.session.text;
+        if (restoredPrefix && !/\s$/.test(restoredPrefix)) restoredPrefix += ' ';
+        recognizedText.value = restoredPrefix;
+        const lh = data.session.letterH;
+        if (typeof lh === 'number' && lh >= 30 && lh <= 110) LETTER_H = lh;
+        relayout();
+
+        // Notas de voz
+        fresh.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+        let maxNum = Math.max(audioCounter, data.session.counter || 0);
+        for (const n of fresh) {
+          maxNum = Math.max(maxNum, n.num || 0);
+          audioIds.remember(n.id); // para que un resync de Mago no la repita
+          await notePut(n);
+          try { renderAudioCard(n, { fresh: false, own: !!n.own }); } catch (er) { console.warn('nota no restaurada', er); }
+        }
+        audioCounter = maxNum; audioCount = audioCounter;
+        noteTrim(); updateLastAct();
+
+        // Memoria de letras (opcional)
+        if (mem.length > 0 && confirm('El respaldo trae ' + mem.length + ' ejemplos de la memoria de letras (ahora tenés ' + memory.length + ').\n\nAceptar = reemplazar la memoria actual\nCancelar = dejar la actual')) {
+          memory = mem;
+          try { localStorage.setItem(LEARN_KEY, JSON.stringify(memory)); } catch (e2) {}
+        }
+
+        scheduleSave();
+        setStatus('✅ Respaldo importado (' + fresh.length + ' notas)', 4000);
       };
 
       function handleStroke(data) {

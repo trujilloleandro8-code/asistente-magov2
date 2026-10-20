@@ -62,11 +62,14 @@
       const MAX_RECORD_MS   = 60000; // duración máxima por audio
       const GRACE_MS        = 4500;  // margen inicial: no se evalúa silencio antes de esto
       const SILENCE_CUT_MS  = 3500;  // silencio continuo que dispara el corte automático
-      const MIN_THRESHOLD   = 0.008; // umbral mínimo de volumen (RMS 0..1)
-      const MAX_THRESHOLD   = 0.030; // umbral máximo (para no confundir susurros con silencio)
+      const MIN_THRESHOLD   = 0.003; // umbral mínimo de volumen (RMS 0..1). Un susurro crudo ronda 0.003-0.006
+      const MAX_THRESHOLD   = 0.020; // umbral máximo (para no confundir susurros con silencio)
       const NOISE_FACTOR    = 2.5;   // umbral = ruido de fondo x este factor
       const AUDIO_BITRATE   = 24000; // bits/s: mantiene el audio chico para MQTT (60s ≈ 180 KB)
       const VAD_TICK_MS     = 80;
+      // Filtros del micrófono. false = micrófono "crudo": el supresor de ruido del navegador trata un susurro
+      // constante como ruido de fondo y lo va apagando hasta dejarlo mudo. Ponelo en true solo si querés probar.
+      const MIC_FILTERS     = false;
       const VOICE_CONFIRM_MS = 240;  // tiempo de voz ACUMULADO (no seguido) para dar por hecho que hablaste
       const VOICE_IGNORE_MS  = 600;  // ignora el arranque: toques en pantalla y vibración suenan en el micrófono
       const NO_VOICE_CUT_MS  = 12000; // si en este tiempo no se detectó voz, corta igual
@@ -92,7 +95,13 @@
         try {
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
           audioStream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+            audio: {
+              channelCount: 1,
+              echoCancellation: MIC_FILTERS,
+              noiseSuppression: MIC_FILTERS,
+              autoGainControl: false,
+              voiceIsolation: false
+            }
           });
         } catch (err) {}
       }
@@ -152,7 +161,7 @@
            else noiseFloor += (lvl - noiseFloor) * 0.0005;
            noiseFloor = Math.min(noiseFloor, 0.012);
 
-           const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.003));
+           const threshold = Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, noiseFloor * NOISE_FACTOR + 0.001));
            s.lastThreshold = threshold;
            if (lvl > s.peakLevel) s.peakLevel = lvl;
 
