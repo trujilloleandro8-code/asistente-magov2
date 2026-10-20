@@ -229,6 +229,7 @@
   <div id="ui">
     <button class="btn danger" id="btnClear">🗑️</button>
     <button class="btn" id="btnSync" title="Pedir resincronización a Mago">🔄</button>
+    <button class="btn" id="btnPhoneRec" title="Graba con el micrófono del celular (Mago). Se detiene con este mismo botón, a los 60 s o con triple toque en el celular.">📱⏺ Grabar</button>
     <button class="btn hide-on-audio" id="btnUndo">↩</button>
     <button class="btn hide-on-audio" id="btnSizeDown">A−</button>
     <button class="btn hide-on-audio" id="btnSizeUp">A+</button>
@@ -1287,7 +1288,7 @@
         ta.value = note.text || '';
 
         // Diagnóstico de corte: solo si el Mago envió esos campos (mensajes viejos sin datos no muestran nada)
-        const REASON_TXT = { silence: 'silencio', max: 'máximo', triple: 'triple toque', error: 'error', other: 'otro' };
+        const REASON_TXT = { silence: 'silencio', max: 'máximo', triple: 'triple toque', remote: 'detenido desde el asistente', error: 'error', other: 'otro' };
         if (note.durationMs != null || note.stopReason || note.peakLevel != null || note.threshold != null) {
           const bits = [];
           if (note.durationMs != null) bits.push('⏱ ' + (note.durationMs / 1000).toFixed(1) + ' s');
@@ -1663,6 +1664,53 @@
         setStatus('✅ Respaldo importado (' + fresh.length + ' notas)', 4000);
       };
 
+      // ============ GRABAR CON EL MICRÓFONO DEL CELULAR (control remoto de Mago) ============
+      const btnPhoneRec = document.getElementById('btnPhoneRec');
+      const phoneRec = { on: false, since: 0, waiting: null, tick: null };
+
+      function paintPhoneRec() {
+        if (phoneRec.on) {
+          const sec = Math.floor((Date.now() - phoneRec.since) / 1000);
+          btnPhoneRec.textContent = '📱⏹ Detener (' + sec + 's)';
+          btnPhoneRec.classList.add('danger');
+        } else {
+          btnPhoneRec.textContent = '📱⏺ Grabar';
+          btnPhoneRec.classList.remove('danger');
+        }
+      }
+      function setPhoneRec(on) {
+        phoneRec.on = on;
+        if (on) {
+          phoneRec.since = Date.now();
+          if (!phoneRec.tick) phoneRec.tick = setInterval(paintPhoneRec, 500);
+        } else {
+          clearInterval(phoneRec.tick); phoneRec.tick = null; phoneRec.since = 0;
+        }
+        paintPhoneRec();
+      }
+      // Estado que informa el celular: 'recording' | 'idle'
+      function onRecState(d) {
+        clearTimeout(phoneRec.waiting); phoneRec.waiting = null;
+        btnPhoneRec.disabled = false;
+        const now = d.state === 'recording';
+        if (now !== phoneRec.on) setPhoneRec(now); else paintPhoneRec();
+        if (!now && d.reason === 'no-mic') setStatus('⚠️ El celular no pudo abrir el micrófono (¿permiso?)', 5000);
+        else if (!now && d.reason === 'error') setStatus('⚠️ El celular no pudo grabar', 5000);
+        else if (now) setStatus('📱 Grabando en el celular…', 2000);
+        else if (d.reason === 'remote') setStatus('📱 Grabación detenida, esperando el audio…', 3000);
+      }
+      btnPhoneRec.onclick = () => {
+        if (btnPhoneRec.disabled) return;
+        const action = phoneRec.on ? 'stop' : 'start';
+        btnPhoneRec.disabled = true;
+        clearTimeout(phoneRec.waiting);
+        phoneRec.waiting = setTimeout(() => {
+          phoneRec.waiting = null; btnPhoneRec.disabled = false; paintPhoneRec();
+          setStatus('⚠️ El celular no respondió (¿pantalla apagada o sin conexión?)', 5000);
+        }, 4000);
+        send({ type: 'rec_cmd', id: 'rc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), action: action, ts: Date.now() });
+      };
+
       function handleStroke(data) {
         if (!data.id || strokeIds.has(data.id)) return;
         if (data.isCommand) { strokeCount++; addGlyph(data.points || [], data.id, data.isCommand); return; }
@@ -1685,7 +1733,12 @@
           return;
         }
         if (data.type === 'ping') { send({ type: 'pong', ts: Date.now() }); return; }
-        if (data.type === 'pong') { return; } // presencia: ya actualizada arriba
+        if (data.type === 'pong') {
+          // presencia ya actualizada arriba; además sincroniza el estado del botón de grabar (salvo que esperemos respuesta a un comando)
+          if (typeof data.rec === 'boolean' && !phoneRec.waiting) onRecState({ state: data.rec ? 'recording' : 'idle' });
+          return;
+        }
+        if (data.type === 'rec_state') { onRecState(data); return; }
         if (data.type === 'audio_ack') { return; } // confirmación saliente, nada que hacer
         if (data.type === 'audio_blob') { handleAudio(data); return; }
         if (data.type === 'stroke') { handleStroke(data); return; }

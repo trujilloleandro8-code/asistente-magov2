@@ -70,6 +70,19 @@
       // Filtros del micrófono. false = micrófono "crudo": el supresor de ruido del navegador trata un susurro
       // constante como ruido de fondo y lo va apagando hasta dejarlo mudo. Ponelo en true solo si querés probar.
       const MIC_FILTERS     = false;
+      const KEEP_SCREEN_ON  = true;  // mantiene la pantalla (negra) encendida: con la pantalla bloqueada el celular no recibe comandos
+
+      let screenLock = null;
+      function keepScreenOn() {
+        if (!KEEP_SCREEN_ON) return;
+        try {
+          if (navigator.wakeLock && document.visibilityState === 'visible') {
+            navigator.wakeLock.request('screen').then(l => { screenLock = l; }).catch(() => {});
+          }
+        } catch (e) {}
+      }
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepScreenOn(); });
+      keepScreenOn();
       const VOICE_CONFIRM_MS = 240;  // tiempo de voz ACUMULADO (no seguido) para dar por hecho que hablaste
       const VOICE_IGNORE_MS  = 600;  // ignora el arranque: toques en pantalla y vibración suenan en el micrófono
       const NO_VOICE_CUT_MS  = 12000; // si en este tiempo no se detectó voz, corta igual
@@ -182,6 +195,9 @@
              if (s.voiceMs >= VOICE_CONFIRM_MS) s.hadVoice = true;
            }
 
+           // Grabación comandada desde el asistente: solo se corta con "detener" o al llegar al máximo
+           if (s.manual) return;
+
            // Margen inicial: todavía no se evalúa ningún corte
            if (elapsed < GRACE_MS) { s.silenceSince = null; return; }
 
@@ -214,13 +230,14 @@
          clearTimeout(session.timer);
          if (current === session) current = null;
          try { if (session.rec && session.rec.state !== 'inactive') session.rec.stop(); } catch (e) {}
+         notifyRec('idle', { reason: session.stopReason || 'other' });
          // Limpieza diferida: deja que MediaRecorder entregue su chunk final antes de cerrar todo
          setTimeout(teardownAudioResources, 0);
          // Seguridad: fuerza limpieza si onstop nunca llega
          setTimeout(teardownAudioResources, 2000);
        }
 
-      async function startNewRecording() {
+      async function startNewRecording(opts) {
         if (!audioStream) await initAudioRecorder();
         if (!audioStream) return;
         setupAnalyser();
@@ -231,7 +248,7 @@
         catch (e) { try { rec = new MediaRecorder(audioStream); } catch (e2) { return; } }
 
         const chunks = [];
-        const session = { rec, startedAt: performance.now(), silenceSince: null, vad: null, timer: null, done: false, restarting: false, stopReason: null, peakLevel: 0, lastThreshold: 0, levels: [], hadVoice: false, voiceMs: 0, _lastTick: 0, _winSum: 0, _winN: 0, _lastLevelTs: performance.now(), endedAt: 0 };
+        const session = { rec, startedAt: performance.now(), silenceSince: null, vad: null, timer: null, done: false, restarting: false, stopReason: null, peakLevel: 0, lastThreshold: 0, levels: [], hadVoice: false, voiceMs: 0, _lastTick: 0, _winSum: 0, _winN: 0, _lastLevelTs: performance.now(), endedAt: 0, manual: !!(opts && opts.manual) };
         levelSmooth = 0;
 
         rec.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
@@ -277,6 +294,7 @@
          try { rec.start(); } catch (e) { teardownAudioResources(); return; }
          current = session;
          if (navigator.vibrate) navigator.vibrate([70, 40, 70]);
+         notifyRec('recording', { manual: session.manual });
 
          session.timer = setTimeout(() => { session.stopReason = 'max'; finishRecording(session, false); }, MAX_RECORD_MS);
          if (analyser) session.vad = setInterval(() => vadTick(session), VAD_TICK_MS);
@@ -345,9 +363,40 @@
       }
 
       // ============ MENSAJES DEL ASISTENTE (presencia + resincronización) ============
+      // ============ GRABAR / DETENER DESDE EL ASISTENTE ============
+      const recCmdSeen = new Set();
+      let startingRec = false;
+      function notifyRec(state, extra) {
+        send(Object.assign({ type: 'rec_state', from: CLIENT_ID, state: state, ts: Date.now() }, extra || {}));
+      }
+      function remoteStartRecording() {
+        if (current) { notifyRec('recording', { manual: !!current.manual, already: true }); return; }
+        if (startingRec) return;
+        startingRec = true;
+        startNewRecording({ manual: true })
+          .then(() => { startingRec = false; if (!current) notifyRec('idle', { reason: 'no-mic' }); })
+          .catch(() => { startingRec = false; notifyRec('idle', { reason: 'error' }); });
+      }
+      function remoteStopRecording() {
+        if (!current) { notifyRec('idle', { reason: 'not-recording' }); return; }
+        current.stopReason = 'remote';
+        finishRecording(current, false);
+      }
+
       function handleAsistenteMsg(data) {
         if (!data || data.from === CLIENT_ID) return;
-        if (data.type === 'ping') { send({ type: 'pong', from: CLIENT_ID, ts: Date.now() }); return; }
+        if (data.type === 'ping') { send({ type: 'pong', from: CLIENT_ID, ts: Date.now(), rec: !!current }); return; }
+        if (data.type === 'rec_cmd') {
+          // Se manda por BroadcastChannel y por MQTT: el id evita ejecutarlo dos veces
+          if (data.id) {
+            if (recCmdSeen.has(data.id)) return;
+            recCmdSeen.add(data.id);
+            if (recCmdSeen.size > 60) recCmdSeen.delete(recCmdSeen.values().next().value);
+          }
+          if (data.action === 'start') remoteStartRecording();
+          else if (data.action === 'stop') remoteStopRecording();
+          return;
+        }
         if (data.type === 'hello') { send({ type: 'hello', from: CLIENT_ID, ts: Date.now() }); resyncTo(data.from); return; }
         if (data.type === 'sync_request') { resyncTo(data.from, data.haveAudio); return; }
         if (data.type === 'audio_ack') {
