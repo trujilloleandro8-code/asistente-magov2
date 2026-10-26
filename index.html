@@ -70,6 +70,9 @@
       // Filtros del micrófono. false = micrófono "crudo": el supresor de ruido del navegador trata un susurro
       // constante como ruido de fondo y lo va apagando hasta dejarlo mudo. Ponelo en true solo si querés probar.
       const MIC_FILTERS     = false;
+      // Pausa (sin dibujar) que inserta un espacio solo. Antes 700 ms: con trazos lentos se ponían espacios de más.
+      // Para un espacio a propósito sigue valiendo 1 toque. Subilo si aún sobran espacios, bajalo si faltan.
+      const AUTO_SPACE_MS   = 1100;
       const KEEP_SCREEN_ON  = true;  // mantiene la pantalla (negra) encendida: con la pantalla bloqueada el celular no recibe comandos
 
       let screenLock = null;
@@ -491,7 +494,7 @@
           if (pauseTimer) clearTimeout(pauseTimer);
           pauseTimer = setTimeout(() => {
             sendStroke({ type: 'stroke', id: 'cmd_space_' + Date.now(), from: CLIENT_ID, isCommand: 'space', points: [] });
-          }, 700);
+          }, AUTO_SPACE_MS);
         }
         currentPoints = []; redraw();
       }
